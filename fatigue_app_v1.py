@@ -198,7 +198,7 @@ class FatigueProfilerV3:
             "Zentrale Erschöpfung": self.clamp(central, 0, 100),
             "Muskuläre Ermüdung": self.clamp(muscular, 0, 100),
             "Globale Belastung": self.clamp(global_load, 0, 100),
-            "Kreislauf / BR auffällig": self.clamp(circulatory, 0, 100),
+            "Kreislaufregulation auffällig": self.clamp(circulatory, 0, 100),
             "Infekt-Risiko": self.clamp(illness, 0, 100),
         }
 
@@ -301,8 +301,8 @@ class FatigueProfilerV3:
                 "Ruhepuls Score": round(self.hr_score(), 1),
                 "Load Score": round(self.load_score(), 1),
                 "Subjective Score": round(self.subjective_score(), 1),
-                "ungewöhnliche Atemfrequenz": round(self.respiratory_badness(), 1),
-                "BP Badness": round(self.bp_badness(), 1),
+                "Ungewöhnliche Atemfrequenz": round(self.respiratory_badness(), 1),
+                "Kreislaufregulation": round(self.bp_badness(), 1),
             }
         }
 
