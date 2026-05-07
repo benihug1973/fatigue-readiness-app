@@ -323,16 +323,53 @@ st.caption("Training Readiness, Work Readiness und Fatigue-Profile")
 st.sidebar.header("Eingabe")
 
 with st.sidebar.expander("Training Load", expanded=True):
-    acute_load = st.number_input("Akuter Load", min_value=1.0, value=80.0)
-    chronic_load = st.number_input("Chronischer Load", min_value=1.0, value=65.0)
+
+    acute_load = st.number_input(
+        "Akuter Load",
+        min_value=1,
+        value=80,
+        step=1
+    )
+
+    chronic_load = st.number_input(
+        "Chronischer Load",
+        min_value=1,
+        value=65,
+        step=1
+    )
 
 with st.sidebar.expander("HRV & Herzfrequenz", expanded=True):
-    rmssd = st.number_input("Aktuelle RMSSD", min_value=1.0, value=45.0)
-    baseline_rmssd = st.number_input("Baseline RMSSD", min_value=1.0, value=50.0)
-    resting_hr = st.number_input("Aktueller Ruhepuls", min_value=1.0, value=52.0)
-    baseline_resting_hr = st.number_input("Baseline Ruhepuls", min_value=1.0, value=50.0)
+
+    rmssd = st.number_input(
+        "Aktuelle RMSSD",
+        min_value=1,
+        value=45,
+        step=1
+    )
+
+    baseline_rmssd = st.number_input(
+        "Baseline RMSSD",
+        min_value=1,
+        value=50,
+        step=1
+    )
+
+    resting_hr = st.number_input(
+        "Aktueller Ruhepuls",
+        min_value=1,
+        value=52,
+        step=1
+    )
+
+    baseline_resting_hr = st.number_input(
+        "Baseline Ruhepuls",
+        min_value=1,
+        value=50,
+        step=1
+    )
 
 with st.sidebar.expander("Messung & Atmung", expanded=True):
+
     st.caption(
         "Der Messkontext beeinflusst HRV, Herzfrequenz und Atemfrequenz. "
         "Für diese V1 werden nur Ruhe- oder Schlafmessungen verwendet."
@@ -343,21 +380,53 @@ with st.sidebar.expander("Messung & Atmung", expanded=True):
         ["rest", "sleep"]
     )
 
-    respiratory_rate = st.number_input("Atemfrequenz", min_value=1.0, value=14.0)
+    respiratory_rate = st.number_input(
+        "Atemfrequenz",
+        min_value=1,
+        value=14,
+        step=1
+    )
 
 with st.sidebar.expander("Optional: Blutdruck", expanded=False):
+
     use_bp = st.checkbox("Blutdruck einbeziehen")
+
     if use_bp:
-        systolic_bp = st.number_input("Systolischer Blutdruck", min_value=1.0, value=120.0)
-        diastolic_bp = st.number_input("Diastolischer Blutdruck", min_value=1.0, value=76.0)
-        baseline_systolic_bp = st.number_input("Baseline systolisch", min_value=1.0, value=120.0)
-        baseline_diastolic_bp = st.number_input("Baseline diastolisch", min_value=1.0, value=76.0)
+
+        systolic_bp = st.number_input(
+            "Systolischer Blutdruck",
+            min_value=1,
+            value=120,
+            step=1
+        )
+
+        diastolic_bp = st.number_input(
+            "Diastolischer Blutdruck",
+            min_value=1,
+            value=76,
+            step=1
+        )
+
+        baseline_systolic_bp = st.number_input(
+            "Baseline systolisch",
+            min_value=1,
+            value=120,
+            step=1
+        )
+
+        baseline_diastolic_bp = st.number_input(
+            "Baseline diastolisch",
+            min_value=1,
+            value=76,
+            step=1
+        )
+
     else:
         systolic_bp = None
         diastolic_bp = None
         baseline_systolic_bp = None
         baseline_diastolic_bp = None
-
+        
 with st.sidebar.expander("Subjektive Faktoren", expanded=True):
     general_fatigue = st.slider("Allgemeine Müdigkeit", 1, 10, 5)
     muscle_soreness = st.slider("Muskuläre Schmerzen", 1, 10, 5)
