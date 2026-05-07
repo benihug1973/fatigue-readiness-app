@@ -301,7 +301,7 @@ class FatigueProfilerV3:
                 "Ruhepuls Score": round(self.hr_score(), 1),
                 "Load Score": round(self.load_score(), 1),
                 "Subjective Score": round(self.subjective_score(), 1),
-                "Respiratory Badness": round(self.respiratory_badness(), 1),
+                "ungewöhnliche Atemfrequenz": round(self.respiratory_badness(), 1),
                 "BP Badness": round(self.bp_badness(), 1),
             }
         }
@@ -326,17 +326,23 @@ with st.sidebar.expander("Training Load", expanded=True):
     acute_load = st.number_input("Akuter Load", min_value=1.0, value=80.0)
     chronic_load = st.number_input("Chronischer Load", min_value=1.0, value=65.0)
 
-with st.sidebar.expander("HRV & Herz", expanded=True):
+with st.sidebar.expander("HRV & Herzfrequenz", expanded=True):
     rmssd = st.number_input("Aktuelle RMSSD", min_value=1.0, value=45.0)
     baseline_rmssd = st.number_input("Baseline RMSSD", min_value=1.0, value=50.0)
     resting_hr = st.number_input("Aktueller Ruhepuls", min_value=1.0, value=52.0)
     baseline_resting_hr = st.number_input("Baseline Ruhepuls", min_value=1.0, value=50.0)
 
-with st.sidebar.expander("Atmung & Kontext", expanded=True):
+with st.sidebar.expander("Messung & Atmung", expanded=True):
+    st.caption(
+        "Der Messkontext beeinflusst HRV, Herzfrequenz und Atemfrequenz. "
+        "Für diese V1 werden nur Ruhe- oder Schlafmessungen verwendet."
+    )
+
     measurement_context = st.selectbox(
         "Messkontext",
-        ["rest", "sleep", "light", "training"]
+        ["rest", "sleep"]
     )
+
     respiratory_rate = st.number_input("Atemfrequenz", min_value=1.0, value=14.0)
 
 with st.sidebar.expander("Optional: Blutdruck", expanded=False):
