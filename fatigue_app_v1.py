@@ -498,11 +498,11 @@ class FatigueProfilerV3:
 
 st.set_page_config(
     page_title="Fatigue App V2",
-    page_icon="🧠",
+    page_icon="🏃",
     layout="wide"
 )
 
-st.title("🧠 Fatigue App V2")
+st.title("🏃 Fatigue App V2")
 st.caption("Training Readiness, Work Readiness, Fatigue-Profile und HRV-Trends")
 
 st.sidebar.header("Eingabe")
