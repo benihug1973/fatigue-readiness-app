@@ -2,3 +2,5 @@ streamlit
 pandas
 matplotlib
 reportlab
+gspread
+google-auth
