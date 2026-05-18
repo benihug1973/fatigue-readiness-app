@@ -219,7 +219,7 @@ def compute_hrv_trend(history_df: pd.DataFrame, current_rmssd: float, user_id: s
 # =============================
 
 @dataclass
-class UserInputV3:
+class UserInputV4:
     acute_load: float
     chronic_load: float
     resting_hr: float
@@ -247,8 +247,8 @@ class UserInputV3:
 # MODEL
 # =============================
 
-class FatigueProfilerV3:
-    def __init__(self, data: UserInputV3):
+class FatigueProfilerV4:
+    def __init__(self, data: UserInputV4):
         self.d = data
 
     def clamp(self, v, lo, hi):
@@ -309,6 +309,44 @@ class FatigueProfilerV3:
         dia_delta = abs(self.d.diastolic_bp - self.d.baseline_diastolic_bp)
         return self.clamp(sys_delta * 3 + dia_delta * 4, 0, 100)
 
+    def compensation_badness(self):
+        """Erkennt mögliche parasympathische Kompensation.
+
+        Hintergrund:
+        Sehr hohe RMSSD + tiefer Ruhepuls sind oft gut. In Kombination mit
+        hohem Load, Müdigkeit, Muskelschmerzen oder schlechtem Schlaf können sie
+        aber auch eine kompensatorische parasympathische Dominanz anzeigen.
+        """
+        hrv_ratio = self.hrv_ratio()
+        hr_delta = self.hr_delta()
+        load_bad = self.load_badness()
+        fatigue_bad = self.bad_from_1_to_10(self.d.general_fatigue)
+        soreness_bad = self.bad_from_1_to_10(self.d.muscle_soreness)
+        sleep_bad = 100 - self.good_from_1_to_10(self.d.sleep_quality)
+        mood_bad = 100 - self.good_from_1_to_10(self.d.mood)
+
+        strong_high_hrv = hrv_ratio >= 1.30
+        clearly_low_hr = hr_delta <= -4
+        relevant_context = (
+            self.acwr() >= 1.30 or
+            self.d.general_fatigue >= 7 or
+            self.d.muscle_soreness >= 7 or
+            self.d.sleep_quality <= 4
+        )
+
+        if not (strong_high_hrv and clearly_low_hr and relevant_context):
+            return 0
+
+        raw = (
+            25 +
+            load_bad * 0.30 +
+            fatigue_bad * 0.25 +
+            soreness_bad * 0.20 +
+            sleep_bad * 0.15 +
+            mood_bad * 0.10
+        )
+        return self.clamp(raw, 0, 95)
+
     def hrv_score(self):
         return self.clamp(100 - self.hrv_badness(), 0, 100)
 
@@ -341,20 +379,80 @@ class FatigueProfilerV3:
         bp_bad = self.bp_badness()
         hrv_trend_bad = self.d.hrv_trend_badness if self.d.hrv_valid_measurements >= 3 else 0
 
-        central = hrv_bad * 0.24 + hr_bad * 0.17 + stress_bad * 0.21 + fatigue_bad * 0.18 + sleep_bad * 0.10 + resp_bad * 0.07 + hrv_trend_bad * 0.03
-        muscular = soreness_bad * 0.45 + load_bad * 0.35 + fatigue_bad * 0.20
-        illness = illness_bad * 0.65 + hr_bad * 0.15 + hrv_bad * 0.08 + sleep_bad * 0.08 + mood_bad * 0.04
+        compensation = self.compensation_badness()
+
+        # V4: mentale Belastung und Schlaf wirken etwas stärker auf zentrale Erschöpfung.
+        central = (
+            hrv_bad * 0.21 +
+            hr_bad * 0.16 +
+            stress_bad * 0.24 +
+            fatigue_bad * 0.20 +
+            sleep_bad * 0.13 +
+            resp_bad * 0.04 +
+            hrv_trend_bad * 0.02
+        )
+
+        muscular = (
+            soreness_bad * 0.45 +
+            load_bad * 0.35 +
+            fatigue_bad * 0.20
+        )
+
+        # V4: Krankheitssymptome bleiben sehr dominant.
+        illness = (
+            illness_bad * 0.70 +
+            hr_bad * 0.12 +
+            hrv_bad * 0.06 +
+            sleep_bad * 0.08 +
+            mood_bad * 0.04
+        )
+
         circulatory = bp_bad
-        global_load = central * 0.35 + muscular * 0.25 + illness * 0.25 + circulatory * 0.15
-        recovery = 100 - (central * 0.28 + muscular * 0.23 + illness * 0.27 + circulatory * 0.08 + load_bad * 0.14)
+
+        # V4: globale Belastung reagiert stärker auf kombinierte Belastung und Kompensation.
+        global_load = (
+            central * 0.32 +
+            muscular * 0.24 +
+            illness * 0.24 +
+            circulatory * 0.08 +
+            load_bad * 0.07 +
+            compensation * 0.05
+        )
+
+        recovery = 100 - (
+            central * 0.28 +
+            muscular * 0.23 +
+            illness * 0.30 +
+            circulatory * 0.06 +
+            load_bad * 0.10 +
+            compensation * 0.03
+        )
+
+        # V4: harte Plausibilitäts-Caps aus den Szenariotests.
+        if self.d.illness > 6:
+            recovery = min(recovery, 40)
+        elif 3 <= self.d.illness <= 6:
+            recovery = min(recovery, 65)
+
+        if compensation >= 50:
+            recovery = min(recovery, 55)
+            global_load = max(global_load, 55)
+
+        if stress_bad >= 85 and sleep_bad >= 70 and fatigue_bad >= 70:
+            recovery = min(recovery, 60)
+            global_load = max(global_load, 55)
+
+        if load_bad >= 90 and fatigue_bad >= 80 and sleep_bad >= 70:
+            global_load = max(global_load, 75)
 
         return {
-            "Erholungsindex": self.clamp(recovery, 0, 100),
+            "Erholungsindex": self.clamp(recovery, 0, 95),
             "Zentrale Erschöpfung": self.clamp(central, 0, 100),
             "Muskuläre Ermüdung": self.clamp(muscular, 0, 100),
             "Globale Belastung": self.clamp(global_load, 0, 100),
             "Kreislaufregulation": self.clamp(circulatory, 0, 100),
             "Krankheitssymptome": self.clamp(illness, 0, 100),
+            "Kompensationsbelastung": self.clamp(compensation, 0, 100),
         }
 
     def dominant_profile(self):
@@ -373,6 +471,8 @@ class FatigueProfilerV3:
             drivers.append("7-Messpunkt-LnRMSSD-Trend unter individueller Schwelle")
         if self.d.hrv_trend_status == "über Baseline - Kontext prüfen":
             drivers.append("LnRMSSD-Trend über Schwelle: Kontext mit Load, Puls und Müdigkeit prüfen")
+        if self.compensation_badness() >= 50:
+            drivers.append("Mögliche parasympathische Kompensation: hohe RMSSD, tiefer Ruhepuls und Belastungszeichen")
         if self.hr_badness() > 40:
             drivers.append("Ruhepuls deutlich über Baseline")
         if self.load_badness() > 40:
@@ -398,14 +498,32 @@ class FatigueProfilerV3:
         return drivers
 
     def training_readiness(self):
-        score = self.hrv_score() * 0.24 + self.hr_score() * 0.14 + self.load_score() * 0.18 + self.subjective_score() * 0.34 + (100 - self.respiratory_badness()) * 0.08 + (100 - self.d.hrv_trend_badness) * 0.06
+        score = (
+            self.hrv_score() * 0.22 +
+            self.hr_score() * 0.12 +
+            self.load_score() * 0.17 +
+            self.subjective_score() * 0.36 +
+            (100 - self.respiratory_badness()) * 0.07 +
+            (100 - self.d.hrv_trend_badness) * 0.04 +
+            (100 - self.compensation_badness()) * 0.02
+        )
+
+        # V4 Safety Override: Krankheitssymptome werden härter begrenzt.
         if self.d.illness > 6:
-            score = min(score, 25)
+            score = min(score, 15)
         elif 3 <= self.d.illness <= 6:
             score = min(score, 55)
+
         if self.d.hrv_trend_status == "unter Baseline":
             score = min(score, 65)
-        return self.clamp(score, 0, 100)
+
+        if self.compensation_badness() >= 50:
+            score = min(score, 60)
+
+        if self.load_badness() >= 90 and self.d.general_fatigue >= 8 and self.d.sleep_quality <= 3:
+            score = min(score, 35)
+
+        return self.clamp(score, 0, 95)
 
     def work_readiness(self):
         fatigue_good = 100 - self.bad_from_1_to_10(self.d.general_fatigue)
@@ -413,12 +531,12 @@ class FatigueProfilerV3:
         illness_good = 100 - self.bad_from_1_to_10(self.d.illness)
         sleep_good = self.good_from_1_to_10(self.d.sleep_quality)
         mood_good = self.good_from_1_to_10(self.d.mood)
-        score = fatigue_good * 0.20 + stress_good * 0.24 + illness_good * 0.25 + sleep_good * 0.19 + mood_good * 0.12
+        score = fatigue_good * 0.20 + stress_good * 0.26 + illness_good * 0.26 + sleep_good * 0.18 + mood_good * 0.10
         if self.d.illness > 6:
-            score = min(score, 35)
+            score = min(score, 30)
         elif 3 <= self.d.illness <= 6:
             score = min(score, 65)
-        return self.clamp(score, 0, 100)
+        return self.clamp(score, 0, 95)
 
     def recommendation(self, profile):
         if self.d.illness > 6:
@@ -427,6 +545,8 @@ class FatigueProfilerV3:
             return "Nur Training mit tiefer Intensität empfohlen. Keine Intervalle, keine harte Kraftbelastung und keine hohe muskuläre Belastung."
         if self.d.hrv_trend_status == "unter Baseline":
             return "Der LnRMSSD-Trend liegt unter der individuellen Schwelle. Heute keine intensive Einheit; besser lockeres Training oder Erholung."
+        if self.compensation_badness() >= 50:
+            return "Mögliche parasympathische Kompensation: RMSSD ist hoch und der Ruhepuls tief, gleichzeitig bestehen Belastungszeichen. Heute keine intensive Einheit; kontrolliert oder locker trainieren."
         if self.d.hrv_trend_status == "über Baseline - Kontext prüfen" and (self.d.general_fatigue >= 7 or self.d.acute_load / self.d.chronic_load > 1.3):
             return "Der LnRMSSD-Trend ist erhöht, gleichzeitig gibt es Belastungszeichen. Nicht automatisch als top erholt interpretieren; heute eher kontrolliert trainieren."
         if profile == "Erholungsindex":
@@ -441,6 +561,8 @@ class FatigueProfilerV3:
             return "Kreislaufregulation auffällig. Belastung vorsichtig wählen und Verlauf beobachten."
         if profile == "Krankheitssymptome":
             return "Krankheitssymptome beachten. Nur sehr lockere Belastung, wenn Symptome gering sind."
+        if profile == "Kompensationsbelastung":
+            return "Mögliche parasympathische Kompensation. Hohe RMSSD hier nicht automatisch als sehr gute Erholung interpretieren."
         return "Moderate Belastung und Selbstbeobachtung empfohlen."
 
     def run(self):
@@ -462,6 +584,7 @@ class FatigueProfilerV3:
                 "Ungewöhnliche Atemfrequenz": round(self.respiratory_badness(), 1),
                 "Kreislaufregulation": round(self.bp_badness(), 1),
                 "LnRMSSD Trendbelastung": round(self.d.hrv_trend_badness, 1),
+                "Kompensationsbelastung": round(self.compensation_badness(), 1),
             }
         }
 
@@ -470,9 +593,9 @@ class FatigueProfilerV3:
 # STREAMLIT UI
 # =============================
 
-st.set_page_config(page_title="Fatigue App V3", page_icon="🏃", layout="wide")
-st.title("🏃 Fatigue App V3")
-st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends und Google-Sheet-Speicherung")
+st.set_page_config(page_title="Fatigue App V4", page_icon="🏃", layout="wide")
+st.title("🏃 Fatigue App V4")
+st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Kompensationslogik und Google-Sheet-Speicherung")
 
 if google_sheets_configured():
     st.info("Datenspeicherung: Google Sheet ist konfiguriert.")
@@ -529,7 +652,7 @@ if "measurements" not in st.session_state:
 history_df = pd.DataFrame(st.session_state.measurements)
 hrv_trend = compute_hrv_trend(history_df, rmssd, user_id.strip())
 
-data = UserInputV3(
+data = UserInputV4(
     acute_load=acute_load,
     chronic_load=chronic_load,
     resting_hr=resting_hr,
@@ -553,7 +676,7 @@ data = UserInputV3(
     hrv_valid_measurements=hrv_trend["valid_measurements"],
 )
 
-profiler = FatigueProfilerV3(data)
+profiler = FatigueProfilerV4(data)
 result = profiler.run()
 
 
@@ -591,6 +714,7 @@ if st.sidebar.button("Aktuelle Messung speichern"):
             "Konfidenz": result["confidence"],
             "Empfehlung": result["recommendation"],
             "HRV Trendstatus": hrv_trend["status"],
+            "Kompensationsbelastung": result["subscores"].get("Kompensationsbelastung", 0),
             "LnRMSSD Rolling": None if hrv_trend["ln_rmssd_rolling"] is None else round(hrv_trend["ln_rmssd_rolling"], 4),
             "LnRMSSD Baseline": None if hrv_trend["ln_rmssd_baseline"] is None else round(hrv_trend["ln_rmssd_baseline"], 4),
             "SWC": None if hrv_trend["swc"] is None else round(hrv_trend["swc"], 4),
@@ -637,6 +761,13 @@ trend_col3.metric("7-Messpunkt-LnRMSSD", "-" if hrv_trend["ln_rmssd_rolling"] is
 trend_col4.metric("Individuelle Schwelle (SWC)", "-" if hrv_trend["swc"] is None else round(hrv_trend["swc"], 3))
 st.caption(hrv_trend["explanation"])
 
+compensation_value = result["subscores"].get("Kompensationsbelastung", 0)
+if compensation_value >= 50:
+    st.warning(
+        "Mögliche parasympathische Kompensation erkannt: hohe RMSSD und tiefer Ruhepuls "
+        "treten zusammen mit Load/Müdigkeit/Muskelschmerzen oder schlechtem Schlaf auf."
+    )
+
 st.divider()
 st.subheader("Fatigue Profile Scores")
 profile_df = pd.DataFrame(list(result["profile_scores"].items()), columns=["Profil", "Score"])
@@ -682,7 +813,7 @@ else:
         mime="text/csv",
     )
 
-    chart_cols = ["Training Readiness", "Work Readiness", "RMSSD", "Ruhepuls", "Krankheitssymptome", "Schlafqualität", "Mentaler Stress"]
+    chart_cols = ["Training Readiness", "Work Readiness", "RMSSD", "Ruhepuls", "Krankheitssymptome", "Kompensationsbelastung", "Schlafqualität", "Mentaler Stress"]
     existing_chart_cols = [c for c in chart_cols if c in display_history_df.columns]
 
     if existing_chart_cols and len(display_history_df) >= 2:
@@ -712,5 +843,6 @@ else:
 st.divider()
 st.caption(
     "Hinweis: Dieses Modell ist ein heuristisches Monitoring-Tool und ersetzt keine medizinische Diagnostik. "
-    "HRV wird trendbasiert über LnRMSSD und wiederholte Messungen interpretiert."
+    "V4 interpretiert HRV trendbasiert über LnRMSSD, berücksichtigt Krankheitssymptome stärker "
+    "und erkennt mögliche parasympathische Kompensation bei hoher RMSSD, tiefem Ruhepuls und Belastungszeichen."
 )
