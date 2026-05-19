@@ -672,19 +672,29 @@ st.sidebar.subheader("User")
 user_id = st.sidebar.text_input("User-ID", value="test_user_01", help="Bitte eindeutige ID verwenden, z.B. athlete_01 oder beni_01.")
 st.sidebar.caption("Jede gespeicherte Messung wird mit dieser User-ID abgelegt.")
 
-st.sidebar.divider()
-st.sidebar.subheader("Nutzerleitfaden")
-try:
-    with open("Readiness_App_Nutzerleitfaden.pdf", "rb") as pdf_file:
-        st.sidebar.download_button(
-            label="📘 Nutzerleitfaden als PDF öffnen/herunterladen",
-            data=pdf_file,
-            file_name="Readiness_App_Nutzerleitfaden.pdf",
-            mime="application/pdf",
-        )
-except FileNotFoundError:
-    st.sidebar.info("PDF-Nutzerleitfaden noch nicht im App-Ordner gefunden.")
+# =============================
+# NUTZERLEITFADEN PDF
+# =============================
 
+st.sidebar.divider()
+st.sidebar.subheader("📘 Nutzerleitfaden")
+
+try:
+    with open("Readyness_App_Nutzerleitfaden.pdf", "rb") as pdf_file:
+        PDFbyte = pdf_file.read()
+
+    st.sidebar.download_button(
+        label="📥 Nutzerleitfaden öffnen / herunterladen",
+        data=PDFbyte,
+        file_name="Readyness_App_Nutzerleitfaden.pdf",
+        mime="application/pdf"
+    )
+
+except FileNotFoundError:
+    st.sidebar.warning(
+        "Nutzerleitfaden nicht gefunden. "
+        "Bitte prüfen ob die PDF-Datei in GitHub hochgeladen wurde."
+    )
 with st.sidebar.expander("Trainingsbelastung - Session RPE", expanded=True):
     st.caption("Akuter Load = Dauer in Minuten × Intensität 1-10 × Trainingsart-Faktor.")
 
