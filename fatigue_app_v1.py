@@ -129,6 +129,71 @@ def ln_rmssd(value: float) -> float:
     return math.log(max(float(value), 1.0))
 
 
+def training_type_factor(training_type: str) -> float:
+    factors = {
+        "Ausdauer": 1.00,
+        "Recovery Training": 0.55,
+        "HIIT": 1.35,
+        "Wettkampf": 1.60,
+        "Kraft": 1.15,
+    }
+    return factors.get(training_type, 1.0)
+
+
+def strength_type_factor(strength_type: str) -> float:
+    factors = {
+        "Hypertrophie": 1.10,
+        "Maximalkraft": 1.25,
+        "Kraftausdauer": 1.00,
+        "keine Kraftangabe": 1.00,
+    }
+    return factors.get(strength_type, 1.0)
+
+
+def calculate_session_rpe_load(duration_min: int, intensity_rpe: int, training_type: str, strength_type: str) -> float:
+    """Session-RPE Load: Dauer in Minuten * RPE * Belastungsfaktor."""
+    load = duration_min * intensity_rpe * training_type_factor(training_type)
+    if training_type == "Kraft":
+        load *= strength_type_factor(strength_type)
+    return round(load, 1)
+
+
+def calculate_chronic_training_load(
+    weekly_hours: float,
+    intensive_sessions_per_week: int,
+    strength_sessions_per_week: int,
+    dominant_strength_type: str,
+) -> dict:
+    """Schätzt den chronischen Load aus den letzten 30 Tagen.
+
+    Für die Testversion wird aus Wochenstunden, intensiven Einheiten und Krafttraining
+    ein durchschnittlicher Wochenload berechnet. Für das Modell wird daraus ein
+    durchschnittlicher Tagesload abgeleitet, damit er mit dem heutigen Session-RPE-Load
+    verglichen werden kann.
+    """
+    weekly_minutes = weekly_hours * 60
+    estimated_average_rpe = 4.2
+    estimated_average_rpe += min(intensive_sessions_per_week, 6) * 0.45
+    estimated_average_rpe += min(strength_sessions_per_week, 6) * 0.15
+
+    if dominant_strength_type == "Maximalkraft":
+        estimated_average_rpe += 0.35
+    elif dominant_strength_type == "Hypertrophie":
+        estimated_average_rpe += 0.25
+    elif dominant_strength_type == "Kraftausdauer":
+        estimated_average_rpe += 0.15
+
+    estimated_average_rpe = max(2.0, min(8.5, estimated_average_rpe))
+    weekly_load = weekly_minutes * estimated_average_rpe
+    daily_equivalent_load = weekly_load / 7 if weekly_load > 0 else 1
+
+    return {
+        "weekly_load": round(weekly_load, 1),
+        "daily_equivalent_load": round(daily_equivalent_load, 1),
+        "estimated_average_rpe": round(estimated_average_rpe, 1),
+    }
+
+
 def compute_hrv_trend(history_df: pd.DataFrame, current_rmssd: float, user_id: str) -> dict:
     """
     HRV-Trendlogik:
@@ -593,9 +658,9 @@ class FatigueProfilerV4:
 # STREAMLIT UI
 # =============================
 
-st.set_page_config(page_title="Fatigue App V4", page_icon="🏃", layout="wide")
-st.title("🏃 Fatigue App V4")
-st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Kompensationslogik und Google-Sheet-Speicherung")
+st.set_page_config(page_title="Readiness-App", page_icon="🏃", layout="wide")
+st.title("🏃 Readiness-App")
+st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Session-RPE-Load und Google-Sheet-Speicherung")
 
 if google_sheets_configured():
     st.info("Datenspeicherung: Google Sheet ist konfiguriert.")
@@ -607,9 +672,101 @@ st.sidebar.subheader("User")
 user_id = st.sidebar.text_input("User-ID", value="test_user_01", help="Bitte eindeutige ID verwenden, z.B. athlete_01 oder beni_01.")
 st.sidebar.caption("Jede gespeicherte Messung wird mit dieser User-ID abgelegt.")
 
-with st.sidebar.expander("Training Load", expanded=True):
-    acute_load = st.number_input("Akuter Load", min_value=1, value=80, step=1)
-    chronic_load = st.number_input("Chronischer Load", min_value=1, value=65, step=1)
+st.sidebar.divider()
+st.sidebar.subheader("Nutzerleitfaden")
+try:
+    with open("Readiness_App_Nutzerleitfaden.pdf", "rb") as pdf_file:
+        st.sidebar.download_button(
+            label="📘 Nutzerleitfaden als PDF öffnen/herunterladen",
+            data=pdf_file,
+            file_name="Readiness_App_Nutzerleitfaden.pdf",
+            mime="application/pdf",
+        )
+except FileNotFoundError:
+    st.sidebar.info("PDF-Nutzerleitfaden noch nicht im App-Ordner gefunden.")
+
+with st.sidebar.expander("Trainingsbelastung - Session RPE", expanded=True):
+    st.caption("Akuter Load = Dauer in Minuten × Intensität 1-10 × Trainingsart-Faktor.")
+
+    training_type = st.selectbox(
+        "Trainingsart",
+        ["Ausdauer", "Kraft", "HIIT", "Wettkampf", "Recovery Training"],
+    )
+
+    duration_min = st.number_input(
+        "Dauer der Einheit (Minuten)",
+        min_value=0,
+        value=60,
+        step=5,
+    )
+
+    intensity_rpe = st.slider(
+        "Intensität / Session RPE",
+        min_value=1,
+        max_value=10,
+        value=5,
+        help="1 = sehr leicht, 10 = maximal anstrengend",
+    )
+
+    if training_type == "Kraft":
+        strength_type = st.selectbox(
+            "Krafttraining-Typ",
+            ["Hypertrophie", "Maximalkraft", "Kraftausdauer"],
+        )
+    else:
+        strength_type = "keine Kraftangabe"
+
+    acute_load = calculate_session_rpe_load(
+        duration_min=duration_min,
+        intensity_rpe=intensity_rpe,
+        training_type=training_type,
+        strength_type=strength_type,
+    )
+
+    st.metric("Berechneter akuter Trainingload", acute_load)
+
+with st.sidebar.expander("Chronische Trainingload über die letzten 30 Tage", expanded=True):
+    st.caption("Für die Testversion wird der chronische Load aus deinem typischen Training der letzten 30 Tage geschätzt.")
+
+    weekly_training_hours = st.number_input(
+        "Trainingsstunden pro Woche im Mittel",
+        min_value=0.0,
+        value=5.0,
+        step=0.5,
+    )
+
+    intensive_sessions_per_week = st.number_input(
+        "Intensive Einheiten pro Woche (HIIT/Wettkampf)",
+        min_value=0,
+        value=1,
+        step=1,
+    )
+
+    strength_sessions_per_week = st.number_input(
+        "Krafttrainings pro Woche",
+        min_value=0,
+        value=1,
+        step=1,
+    )
+
+    chronic_strength_type = st.selectbox(
+        "Dominanter Krafttraining-Typ",
+        ["Hypertrophie", "Maximalkraft", "Kraftausdauer", "keine Kraftangabe"],
+    )
+
+    chronic_estimate = calculate_chronic_training_load(
+        weekly_hours=weekly_training_hours,
+        intensive_sessions_per_week=intensive_sessions_per_week,
+        strength_sessions_per_week=strength_sessions_per_week,
+        dominant_strength_type=chronic_strength_type,
+    )
+
+    chronic_load = chronic_estimate["daily_equivalent_load"]
+    st.metric("Berechneter chronischer Tages-Load", chronic_load)
+    st.caption(
+        f"Geschätzter Wochenload: {chronic_estimate['weekly_load']} | "
+        f"geschätzte Durchschnittsintensität: {chronic_estimate['estimated_average_rpe']}"
+    )
 
 with st.sidebar.expander("HRV & Herzfrequenz", expanded=True):
     rmssd = st.number_input("Aktuelle RMSSD", min_value=1, value=45, step=1)
@@ -692,9 +849,18 @@ if st.sidebar.button("Aktuelle Messung speichern"):
             "Zeitpunkt": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "User-ID": user_id.strip(),
             "Messkontext": measurement_context,
+            "Trainingsart": training_type,
+            "Dauer Minuten": duration_min,
+            "Session RPE": intensity_rpe,
+            "Krafttraining Typ": strength_type,
             "Akuter Load": acute_load,
             "Chronischer Load": chronic_load,
             "ACWR": round(acute_load / chronic_load, 2),
+            "30 Tage Wochenstunden": weekly_training_hours,
+            "30 Tage intensive Einheiten/Woche": intensive_sessions_per_week,
+            "30 Tage Krafttrainings/Woche": strength_sessions_per_week,
+            "30 Tage Krafttyp": chronic_strength_type,
+            "Geschätzter Wochenload": chronic_estimate["weekly_load"],
             "RMSSD": rmssd,
             "LnRMSSD": round(ln_rmssd(rmssd), 4),
             "Baseline RMSSD": baseline_rmssd,
@@ -843,6 +1009,6 @@ else:
 st.divider()
 st.caption(
     "Hinweis: Dieses Modell ist ein heuristisches Monitoring-Tool und ersetzt keine medizinische Diagnostik. "
-    "V4 interpretiert HRV trendbasiert über LnRMSSD, berücksichtigt Krankheitssymptome stärker "
+    "Die Readiness-App interpretiert HRV trendbasiert über LnRMSSD, berücksichtigt Krankheitssymptome stärker "
     "und erkennt mögliche parasympathische Kompensation bei hoher RMSSD, tiefem Ruhepuls und Belastungszeichen."
 )
