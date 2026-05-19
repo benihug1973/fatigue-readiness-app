@@ -458,8 +458,8 @@ class FatigueProfilerV4:
         )
 
         muscular = (
-            soreness_bad * 0.45 +
-            load_bad * 0.35 +
+            soreness_bad * 0.55 +
+            load_bad * 0.25 +
             fatigue_bad * 0.20
         )
 
