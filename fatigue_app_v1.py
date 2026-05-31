@@ -194,20 +194,49 @@ def calculate_chronic_training_load(
     }
 
 
-def compute_hrv_trend(history_df: pd.DataFrame, current_rmssd: float, user_id: str) -> dict:
+def rr_interval_ms(heart_rate_bpm: float) -> float:
+    """R-R-Intervall in Millisekunden aus der Herzfrequenz."""
+    return 60000 / max(float(heart_rate_bpm), 1.0)
+
+
+def compute_hrr_badness(hrr_1min: Optional[float]) -> float:
+    """Interpretation von 1-Minuten-HRR als optionaler Zusatzmarker.
+
+    Wichtig: HRR ist nur sinnvoll interpretierbar, wenn der Test standardisiert ist
+    (gleiche Belastungsart, Dauer, Intensität, Tageszeit und Erholungssituation).
     """
-    HRV-Trendlogik:
+    if hrr_1min is None:
+        return 0.0
+    if hrr_1min >= 35:
+        return 0.0
+    if hrr_1min >= 25:
+        return 20.0
+    if hrr_1min >= 18:
+        return 45.0
+    if hrr_1min >= 12:
+        return 70.0
+    return 90.0
+
+
+def compute_hrv_trend(history_df: pd.DataFrame, current_rmssd: float, current_resting_hr: float, user_id: str) -> dict:
+    """
+    HRV-Trendlogik nach den aktuellen Studienüberlegungen:
     - interne Auswertung mit LnRMSSD
     - mindestens 3 gültige Messungen für einen ersten Trend
-    - 7-Messpunkt-Rolling-Average
-    - individuelle Baseline als bis zu 14 letzte Messungen
+    - 7-Messpunkt-Rolling-Average für Tagessteuerung
+    - bis zu 14 letzte Messungen als individuelle Baseline
     - SWC als 0.5 * SD der LnRMSSD-Baseline, Minimum 0.03
+    - RMSSD/LnRMSSD-Stabilität über CV/SD als Zusatzmarker
+    - R-R-Intervall und LnRMSSD:R-R-Ratio als Plews-orientierter Saturation-Hinweis
+    - Wochenmittel der letzten zwei Wochen, sobald genügend Daten vorhanden sind
     """
     current_row = pd.DataFrame([{
         "Zeitpunkt": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "User-ID": user_id,
         "RMSSD": current_rmssd,
         "LnRMSSD": ln_rmssd(current_rmssd),
+        "Ruhepuls": current_resting_hr,
+        "RR_Intervall_ms": rr_interval_ms(current_resting_hr),
     }])
 
     if history_df is None or history_df.empty:
@@ -219,26 +248,42 @@ def compute_hrv_trend(history_df: pd.DataFrame, current_rmssd: float, user_id: s
 
         if "LnRMSSD" not in temp_df.columns and "RMSSD" in temp_df.columns:
             temp_df["LnRMSSD"] = temp_df["RMSSD"].apply(ln_rmssd)
+        if "RR_Intervall_ms" not in temp_df.columns and "Ruhepuls" in temp_df.columns:
+            temp_df["RR_Intervall_ms"] = temp_df["Ruhepuls"].apply(rr_interval_ms)
 
-        keep_cols = [c for c in ["Zeitpunkt", "User-ID", "RMSSD", "LnRMSSD"] if c in temp_df.columns]
+        keep_cols = [c for c in ["Zeitpunkt", "User-ID", "RMSSD", "LnRMSSD", "Ruhepuls", "RR_Intervall_ms"] if c in temp_df.columns]
         temp_df = temp_df[keep_cols]
         temp_df = pd.concat([temp_df, current_row], ignore_index=True)
 
     temp_df = temp_df.dropna(subset=["LnRMSSD"])
     n = len(temp_df)
 
+    # Standardwerte
+    result = {
+        "valid_measurements": n,
+        "ln_rmssd_current": ln_rmssd(current_rmssd),
+        "ln_rmssd_rolling": None,
+        "ln_rmssd_baseline": None,
+        "swc": None,
+        "trend_delta": None,
+        "status": "nicht genügend Messungen",
+        "badness": 0.0,
+        "weekly_mean_current": None,
+        "weekly_mean_previous": None,
+        "weekly_mean_delta": None,
+        "lnrmssd_sd_7": None,
+        "lnrmssd_cv_7": None,
+        "cv_badness": 0.0,
+        "rr_interval_current": rr_interval_ms(current_resting_hr),
+        "lnrmssd_rr_ratio_current": ln_rmssd(current_rmssd) / rr_interval_ms(current_resting_hr),
+        "lnrmssd_rr_ratio_rolling": None,
+        "saturation_score": 0.0,
+        "freshness_score": 0.0,
+        "explanation": "Für eine erste HRV-Trendbewertung werden mindestens 3 gültige Messungen pro User benötigt.",
+    }
+
     if n < 3:
-        return {
-            "valid_measurements": n,
-            "ln_rmssd_current": ln_rmssd(current_rmssd),
-            "ln_rmssd_rolling": None,
-            "ln_rmssd_baseline": None,
-            "swc": None,
-            "trend_delta": None,
-            "status": "nicht genügend Messungen",
-            "badness": 0.0,
-            "explanation": "Für eine erste HRV-Trendbewertung werden mindestens 3 gültige Messungen pro User benötigt.",
-        }
+        return result
 
     rolling_window = min(7, n)
     baseline_window = min(14, n)
@@ -253,10 +298,49 @@ def compute_hrv_trend(history_df: pd.DataFrame, current_rmssd: float, user_id: s
     lower = baseline_mean - swc
     upper = baseline_mean + swc
 
+    # HRV-Stabilität / CV: Plews/Esco-Logik, aber pragmatisch mit LnRMSSD-SD/CV.
+    rolling_values = temp_df["LnRMSSD"].tail(rolling_window)
+    ln_sd_7 = rolling_values.std(ddof=1)
+    ln_cv_7 = None
+    cv_badness = 0.0
+    if not pd.isna(ln_sd_7) and ln_rolling != 0:
+        ln_cv_7 = abs(ln_sd_7 / ln_rolling) * 100
+        # Pragmatik: nicht absolute medizinische Grenzwerte, sondern Stabilitätsmarker.
+        if ln_cv_7 < 2.0:
+            cv_badness = 0.0
+        elif ln_cv_7 < 4.0:
+            cv_badness = 20.0
+        elif ln_cv_7 < 6.0:
+            cv_badness = 45.0
+        else:
+            cv_badness = 70.0
+
+    # Plews: R-R/LnRMSSD-Ratio zur Einordnung möglicher HRV-Saturation.
+    rr_current = rr_interval_ms(current_resting_hr)
+    ratio_current = ln_rmssd(current_rmssd) / rr_current
+    ratio_rolling = None
+    saturation_score = 0.0
+    freshness_score = 0.0
+
+    if "RR_Intervall_ms" in temp_df.columns:
+        temp_df["LnRMSSD_RR_Ratio"] = temp_df["LnRMSSD"] / temp_df["RR_Intervall_ms"]
+        ratio_rolling = temp_df["LnRMSSD_RR_Ratio"].tail(rolling_window).mean()
+        rr_baseline = temp_df["RR_Intervall_ms"].tail(baseline_window).mean()
+        rr_delta = rr_current - rr_baseline
+
+        # Saturation: sehr tiefer Puls/lange RR-Intervalle, LnRMSSD leicht tiefer, Ratio nicht erhöht.
+        if rr_delta > 60 and ln_rolling < baseline_mean and ratio_rolling <= temp_df["LnRMSSD_RR_Ratio"].tail(baseline_window).mean():
+            saturation_score = min(85.0, 35.0 + (rr_delta / 120.0) * 30.0)
+            freshness_score = min(70.0, 20.0 + saturation_score * 0.5)
+
     if ln_rolling < lower:
         status = "unter Baseline"
         badness = min(85, 35 + ((lower - ln_rolling) / swc) * 35)
-        explanation = "Der 7-Messpunkt-LnRMSSD-Trend liegt unter der individuellen Veränderungsschwelle. Intensive Belastung sollte reduziert werden."
+        explanation = "Der 7-Messpunkt-LnRMSSD-Trend liegt unter der individuellen Veränderungsschwelle. Kontext prüfen: Bei tiefem Ruhepuls kann auch HRV-Saturation vorliegen."
+        if saturation_score >= 40:
+            status = "unter Baseline - mögliche Saturation"
+            badness = max(5.0, badness * 0.45)
+            explanation = "LnRMSSD ist tiefer, aber der Ruhepuls/R-R-Kontext spricht für mögliche HRV-Saturation. Nicht automatisch als schlechte Erholung interpretieren."
     elif ln_rolling > upper:
         status = "über Baseline - Kontext prüfen"
         badness = 10
@@ -266,17 +350,34 @@ def compute_hrv_trend(history_df: pd.DataFrame, current_rmssd: float, user_id: s
         badness = 0
         explanation = "Der 7-Messpunkt-LnRMSSD-Trend liegt innerhalb der individuellen Veränderungsschwelle."
 
-    return {
-        "valid_measurements": n,
-        "ln_rmssd_current": ln_rmssd(current_rmssd),
+    # Wochenmittel: letzte 7 vs vorherige 7 Messungen, wenn vorhanden.
+    weekly_mean_current = None
+    weekly_mean_previous = None
+    weekly_mean_delta = None
+    if n >= 14:
+        weekly_mean_current = temp_df["LnRMSSD"].tail(7).mean()
+        weekly_mean_previous = temp_df["LnRMSSD"].iloc[-14:-7].mean()
+        weekly_mean_delta = weekly_mean_current - weekly_mean_previous
+
+    result.update({
         "ln_rmssd_rolling": ln_rolling,
         "ln_rmssd_baseline": baseline_mean,
         "swc": swc,
         "trend_delta": trend_delta,
         "status": status,
         "badness": float(badness),
+        "weekly_mean_current": weekly_mean_current,
+        "weekly_mean_previous": weekly_mean_previous,
+        "weekly_mean_delta": weekly_mean_delta,
+        "lnrmssd_sd_7": None if pd.isna(ln_sd_7) else float(ln_sd_7),
+        "lnrmssd_cv_7": None if ln_cv_7 is None else float(ln_cv_7),
+        "cv_badness": float(cv_badness),
+        "lnrmssd_rr_ratio_rolling": ratio_rolling,
+        "saturation_score": float(saturation_score),
+        "freshness_score": float(freshness_score),
         "explanation": explanation,
-    }
+    })
+    return result
 
 
 # =============================
@@ -306,6 +407,11 @@ class UserInputV4:
     hrv_trend_status: str = "nicht genügend Messungen"
     hrv_trend_badness: float = 0.0
     hrv_valid_measurements: int = 0
+    hrv_cv_badness: float = 0.0
+    hrv_saturation_score: float = 0.0
+    hrv_freshness_score: float = 0.0
+    hrr_1min: Optional[float] = None
+    hrr_badness_value: float = 0.0
 
 
 # =============================
@@ -337,8 +443,28 @@ class FatigueProfilerV4:
     def hrv_badness(self):
         single_day_badness = self.clamp((1 - self.hrv_ratio()) * 140, 0, 100)
         if self.d.hrv_valid_measurements >= 3:
-            return self.clamp(single_day_badness * 0.70 + self.d.hrv_trend_badness * 0.30, 0, 100)
+            combined = (
+                single_day_badness * 0.60 +
+                self.d.hrv_trend_badness * 0.25 +
+                self.d.hrv_cv_badness * 0.15
+            )
+            # Plews-Logik: bei möglicher HRV-Saturation tiefe HRV nicht zu hart bestrafen.
+            if self.d.hrv_saturation_score >= 40:
+                combined *= 0.55
+            return self.clamp(combined, 0, 100)
         return single_day_badness
+
+    def hrv_instability_badness(self):
+        return self.clamp(self.d.hrv_cv_badness, 0, 100)
+
+    def hrv_saturation_score(self):
+        return self.clamp(self.d.hrv_saturation_score, 0, 100)
+
+    def hrv_freshness_score(self):
+        return self.clamp(self.d.hrv_freshness_score, 0, 100)
+
+    def hrr_badness(self):
+        return self.clamp(self.d.hrr_badness_value, 0, 100)
 
     def hr_badness(self):
         return self.clamp(self.hr_delta() * 10, 0, 100)
@@ -443,6 +569,8 @@ class FatigueProfilerV4:
         resp_bad = self.respiratory_badness()
         bp_bad = self.bp_badness()
         hrv_trend_bad = self.d.hrv_trend_badness if self.d.hrv_valid_measurements >= 3 else 0
+        hrv_cv_bad = self.hrv_instability_badness()
+        hrr_bad = self.hrr_badness()
 
         compensation = self.compensation_badness()
 
@@ -454,7 +582,8 @@ class FatigueProfilerV4:
             fatigue_bad * 0.20 +
             sleep_bad * 0.13 +
             resp_bad * 0.04 +
-            hrv_trend_bad * 0.02
+            hrv_trend_bad * 0.02 +
+            hrv_cv_bad * 0.04
         )
 
         muscular = (
@@ -472,7 +601,10 @@ class FatigueProfilerV4:
             mood_bad * 0.04
         )
 
-        circulatory = bp_bad
+        circulatory = (
+            bp_bad * 0.60 +
+            hrr_bad * 0.40
+        )
 
         # V4: globale Belastung reagiert stärker auf kombinierte Belastung und Kompensation.
         global_load = (
@@ -481,7 +613,8 @@ class FatigueProfilerV4:
             illness * 0.24 +
             circulatory * 0.08 +
             load_bad * 0.07 +
-            compensation * 0.05
+            compensation * 0.05 +
+            hrv_cv_bad * 0.05
         )
 
         recovery = 100 - (
@@ -490,7 +623,8 @@ class FatigueProfilerV4:
             illness * 0.30 +
             circulatory * 0.06 +
             load_bad * 0.10 +
-            compensation * 0.03
+            compensation * 0.03 +
+            hrv_cv_bad * 0.04
         )
 
         # V4: harte Plausibilitäts-Caps aus den Szenariotests.
@@ -509,6 +643,19 @@ class FatigueProfilerV4:
 
         if load_bad >= 90 and fatigue_bad >= 80 and sleep_bad >= 70:
             global_load = max(global_load, 75)
+
+        if hrv_cv_bad >= 45:
+            global_load = max(global_load, 50)
+            recovery = min(recovery, 70)
+
+        if hrr_bad >= 70:
+            recovery = min(recovery, 60)
+            global_load = max(global_load, 55)
+
+        # Freshness/Saturation: bei tieferem LnRMSSD, aber sehr tiefem Ruhepuls und stabiler subjektiver Lage
+        # wird Recovery nicht automatisch abgestraft.
+        if self.hrv_freshness_score() >= 45 and fatigue_bad < 55 and illness_bad < 30:
+            recovery = max(recovery, 70)
 
         return {
             "Erholungsindex": self.clamp(recovery, 0, 95),
@@ -536,6 +683,14 @@ class FatigueProfilerV4:
             drivers.append("7-Messpunkt-LnRMSSD-Trend unter individueller Schwelle")
         if self.d.hrv_trend_status == "über Baseline - Kontext prüfen":
             drivers.append("LnRMSSD-Trend über Schwelle: Kontext mit Load, Puls und Müdigkeit prüfen")
+        if self.d.hrv_cv_badness >= 45:
+            drivers.append("HRV-Stabilität auffällig: hohe Tag-zu-Tag-Schwankung im LnRMSSD")
+        if self.d.hrv_saturation_score >= 40:
+            drivers.append("Mögliche HRV-Saturation: tiefer Ruhepuls verändert die HRV-Interpretation")
+        if self.d.hrv_freshness_score >= 45:
+            drivers.append("Mögliches Freshness-Muster: tiefer Puls und HRV-Kontext sprechen nicht zwingend für Ermüdung")
+        if self.hrr_badness() >= 45:
+            drivers.append("Heart Rate Recovery langsam oder auffällig")
         if self.compensation_badness() >= 50:
             drivers.append("Mögliche parasympathische Kompensation: hohe RMSSD, tiefer Ruhepuls und Belastungszeichen")
         if self.hr_badness() > 40:
@@ -569,8 +724,11 @@ class FatigueProfilerV4:
             self.load_score() * 0.17 +
             self.subjective_score() * 0.36 +
             (100 - self.respiratory_badness()) * 0.07 +
-            (100 - self.d.hrv_trend_badness) * 0.04 +
-            (100 - self.compensation_badness()) * 0.02
+            (100 - self.d.hrv_trend_badness) * 0.035 +
+            (100 - self.d.hrv_cv_badness) * 0.035 +
+            (100 - self.compensation_badness()) * 0.02 +
+            (100 - self.hrr_badness()) * 0.01 +
+            self.hrv_freshness_score() * 0.015
         )
 
         # V4 Safety Override: Krankheitssymptome werden härter begrenzt.
@@ -583,6 +741,12 @@ class FatigueProfilerV4:
             score = min(score, 65)
 
         if self.compensation_badness() >= 50:
+            score = min(score, 60)
+
+        if self.d.hrv_cv_badness >= 60:
+            score = min(score, 60)
+
+        if self.hrr_badness() >= 70:
             score = min(score, 60)
 
         if self.load_badness() >= 90 and self.d.general_fatigue >= 8 and self.d.sleep_quality <= 3:
@@ -608,8 +772,14 @@ class FatigueProfilerV4:
             return "Kein Training empfohlen. Krankheitssymptome sind deutlich erhöht. Erst wieder trainieren, wenn die Symptome stark gesunken sind."
         if 3 <= self.d.illness <= 6:
             return "Nur Training mit tiefer Intensität empfohlen. Keine Intervalle, keine harte Kraftbelastung und keine hohe muskuläre Belastung."
+        if self.d.hrv_trend_status == "unter Baseline - mögliche Saturation":
+            return "LnRMSSD ist tiefer, aber der tiefe Ruhepuls spricht für mögliche HRV-Saturation. Nicht automatisch als schlechte Erholung werten; Profil und Körpergefühl gemeinsam beurteilen."
         if self.d.hrv_trend_status == "unter Baseline":
             return "Der LnRMSSD-Trend liegt unter der individuellen Schwelle. Heute keine intensive Einheit; besser lockeres Training oder Erholung."
+        if self.d.hrv_cv_badness >= 60:
+            return "Die HRV ist über die letzten Messungen instabil. Heute eher kontrolliert trainieren und weitere Messungen beobachten."
+        if self.hrr_badness() >= 70:
+            return "Die Heart Rate Recovery ist langsam. Nur vorsichtig belasten und denselben HRR-Test standardisiert wiederholen."
         if self.compensation_badness() >= 50:
             return "Mögliche parasympathische Kompensation: RMSSD ist hoch und der Ruhepuls tief, gleichzeitig bestehen Belastungszeichen. Heute keine intensive Einheit; kontrolliert oder locker trainieren."
         if self.d.hrv_trend_status == "über Baseline - Kontext prüfen" and (self.d.general_fatigue >= 7 or self.d.acute_load / self.d.chronic_load > 1.3):
@@ -649,6 +819,10 @@ class FatigueProfilerV4:
                 "Ungewöhnliche Atemfrequenz": round(self.respiratory_badness(), 1),
                 "Kreislaufregulation": round(self.bp_badness(), 1),
                 "LnRMSSD Trendbelastung": round(self.d.hrv_trend_badness, 1),
+                "HRV Instabilität": round(self.d.hrv_cv_badness, 1),
+                "HRV Saturation": round(self.hrv_saturation_score(), 1),
+                "Freshness Score": round(self.hrv_freshness_score(), 1),
+                "Heart Rate Recovery Badness": round(self.hrr_badness(), 1),
                 "Kompensationsbelastung": round(self.compensation_badness(), 1),
             }
         }
@@ -802,6 +976,24 @@ with st.sidebar.expander("Optional: Blutdruck", expanded=False):
         baseline_systolic_bp = None
         baseline_diastolic_bp = None
 
+with st.sidebar.expander("Optional: Heart Rate Recovery", expanded=False):
+    st.caption(
+        "HRR nur verwenden, wenn der Test immer gleich durchgeführt wird "
+        "(gleiche Belastungsart, Dauer, Intensität, Tageszeit und Erholungssituation)."
+    )
+    use_hrr = st.checkbox("HRR-Test einbeziehen")
+    if use_hrr:
+        hr_peak_exercise = st.number_input("Peak-Herzfrequenz am Ende des Tests", min_value=1, value=170, step=1)
+        hr_1min_recovery = st.number_input("Herzfrequenz nach 1 Minute Erholung", min_value=1, value=140, step=1)
+        hrr_1min = max(0, hr_peak_exercise - hr_1min_recovery)
+        hrr_badness_value = compute_hrr_badness(hrr_1min)
+        st.metric("HRR 1 Minute", hrr_1min)
+    else:
+        hr_peak_exercise = None
+        hr_1min_recovery = None
+        hrr_1min = None
+        hrr_badness_value = 0.0
+
 with st.sidebar.expander("Subjektive Faktoren", expanded=True):
     st.caption("Bei Belastungsfaktoren gilt: 1 = kein Problem, 10 = stark ausgeprägt.")
     general_fatigue = st.slider("Allgemeine Müdigkeit", 1, 10, 5)
@@ -817,7 +1009,7 @@ if "measurements" not in st.session_state:
     st.session_state.measurements = load_history().to_dict("records")
 
 history_df = pd.DataFrame(st.session_state.measurements)
-hrv_trend = compute_hrv_trend(history_df, rmssd, user_id.strip())
+hrv_trend = compute_hrv_trend(history_df, rmssd, resting_hr, user_id.strip())
 
 data = UserInputV4(
     acute_load=acute_load,
@@ -841,6 +1033,11 @@ data = UserInputV4(
     hrv_trend_status=hrv_trend["status"],
     hrv_trend_badness=hrv_trend["badness"],
     hrv_valid_measurements=hrv_trend["valid_measurements"],
+    hrv_cv_badness=hrv_trend["cv_badness"],
+    hrv_saturation_score=hrv_trend["saturation_score"],
+    hrv_freshness_score=hrv_trend["freshness_score"],
+    hrr_1min=hrr_1min,
+    hrr_badness_value=hrr_badness_value,
 )
 
 profiler = FatigueProfilerV4(data)
@@ -877,6 +1074,8 @@ if st.sidebar.button("Aktuelle Messung speichern"):
             "Ruhepuls": resting_hr,
             "Baseline Ruhepuls": baseline_resting_hr,
             "Atemfrequenz": respiratory_rate,
+            "HRR 1 Minute": hrr_1min,
+            "HRR Badness": hrr_badness_value,
             "Allgemeine Müdigkeit": general_fatigue,
             "Muskuläre Schmerzen": muscle_soreness,
             "Mentaler Stress": mental_stress,
@@ -894,6 +1093,15 @@ if st.sidebar.button("Aktuelle Messung speichern"):
             "LnRMSSD Rolling": None if hrv_trend["ln_rmssd_rolling"] is None else round(hrv_trend["ln_rmssd_rolling"], 4),
             "LnRMSSD Baseline": None if hrv_trend["ln_rmssd_baseline"] is None else round(hrv_trend["ln_rmssd_baseline"], 4),
             "SWC": None if hrv_trend["swc"] is None else round(hrv_trend["swc"], 4),
+            "LnRMSSD CV 7": None if hrv_trend["lnrmssd_cv_7"] is None else round(hrv_trend["lnrmssd_cv_7"], 3),
+            "HRV CV Badness": round(hrv_trend["cv_badness"], 1),
+            "RR Intervall ms": round(hrv_trend["rr_interval_current"], 1),
+            "LnRMSSD RR Ratio": round(hrv_trend["lnrmssd_rr_ratio_current"], 6),
+            "HRV Saturation Score": round(hrv_trend["saturation_score"], 1),
+            "Freshness Score": round(hrv_trend["freshness_score"], 1),
+            "Wochenmittel LnRMSSD aktuell": None if hrv_trend["weekly_mean_current"] is None else round(hrv_trend["weekly_mean_current"], 4),
+            "Wochenmittel LnRMSSD vorher": None if hrv_trend["weekly_mean_previous"] is None else round(hrv_trend["weekly_mean_previous"], 4),
+            "Wochenmittel Delta": None if hrv_trend["weekly_mean_delta"] is None else round(hrv_trend["weekly_mean_delta"], 4),
         }
         for profile_name, score in result["profile_scores"].items():
             new_measurement[profile_name] = score
@@ -937,12 +1145,34 @@ trend_col3.metric("7-Messpunkt-LnRMSSD", "-" if hrv_trend["ln_rmssd_rolling"] is
 trend_col4.metric("Individuelle Schwelle (SWC)", "-" if hrv_trend["swc"] is None else round(hrv_trend["swc"], 3))
 st.caption(hrv_trend["explanation"])
 
+trend_col5, trend_col6, trend_col7, trend_col8 = st.columns(4)
+trend_col5.metric("LnRMSSD CV 7", "-" if hrv_trend["lnrmssd_cv_7"] is None else f"{round(hrv_trend['lnrmssd_cv_7'], 2)} %")
+trend_col6.metric("HRV Instabilität", round(hrv_trend["cv_badness"], 1))
+trend_col7.metric("HRV Saturation", round(hrv_trend["saturation_score"], 1))
+trend_col8.metric("Freshness Score", round(hrv_trend["freshness_score"], 1))
+
+if hrv_trend["weekly_mean_current"] is not None:
+    st.caption(
+        f"Wochenmittel aktuell: {round(hrv_trend['weekly_mean_current'], 3)} | "
+        f"Vorwoche: {round(hrv_trend['weekly_mean_previous'], 3)} | "
+        f"Delta: {round(hrv_trend['weekly_mean_delta'], 3)}"
+    )
+
 compensation_value = result["subscores"].get("Kompensationsbelastung", 0)
 if compensation_value >= 50:
     st.warning(
         "Mögliche parasympathische Kompensation erkannt: hohe RMSSD und tiefer Ruhepuls "
         "treten zusammen mit Load/Müdigkeit/Muskelschmerzen oder schlechtem Schlaf auf."
     )
+
+if hrv_trend["cv_badness"] >= 45:
+    st.warning("HRV-Stabilität auffällig: Die LnRMSSD-Werte schwanken über die letzten Messungen stärker als erwünscht.")
+
+if hrv_trend["saturation_score"] >= 40:
+    st.info("Mögliche HRV-Saturation nach Plews: Tiefer Ruhepuls/R-R-Kontext verändert die Interpretation einer tieferen HRV.")
+
+if hrr_badness_value >= 45:
+    st.warning("Heart Rate Recovery auffällig. Bitte nur interpretieren, wenn der HRR-Test standardisiert durchgeführt wurde.")
 
 st.divider()
 st.subheader("Fatigue Profile Scores")
@@ -989,7 +1219,7 @@ else:
         mime="text/csv",
     )
 
-    chart_cols = ["Training Readiness", "Work Readiness", "RMSSD", "Ruhepuls", "Krankheitssymptome", "Kompensationsbelastung", "Schlafqualität", "Mentaler Stress"]
+    chart_cols = ["Training Readiness", "Work Readiness", "RMSSD", "Ruhepuls", "Krankheitssymptome", "Kompensationsbelastung", "HRV CV Badness", "HRV Saturation Score", "Freshness Score", "Schlafqualität", "Mentaler Stress"]
     existing_chart_cols = [c for c in chart_cols if c in display_history_df.columns]
 
     if existing_chart_cols and len(display_history_df) >= 2:
@@ -1019,6 +1249,7 @@ else:
 st.divider()
 st.caption(
     "Hinweis: Dieses Modell ist ein heuristisches Monitoring-Tool und ersetzt keine medizinische Diagnostik. "
-    "Die Readiness-App interpretiert HRV trendbasiert über LnRMSSD, berücksichtigt Krankheitssymptome stärker "
-    "und erkennt mögliche parasympathische Kompensation bei hoher RMSSD, tiefem Ruhepuls und Belastungszeichen."
+    "Die Readiness-App interpretiert HRV trendbasiert über LnRMSSD, berücksichtigt HRV-Stabilität/CV, "
+    "mögliche HRV-Saturation nach Plews, optionale Heart Rate Recovery und erkennt mögliche parasympathische "
+    "Kompensation bei hoher RMSSD, tiefem Ruhepuls und Belastungszeichen."
 )
