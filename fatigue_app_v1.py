@@ -200,10 +200,11 @@ def rr_interval_ms(heart_rate_bpm: float) -> float:
 
 
 def compute_hrr_badness(hrr_1min: Optional[float]) -> float:
-    """Interpretation von 1-Minuten-HRR als optionaler Zusatzmarker.
+    """Pragmatische Basisbewertung von HRR60.
 
-    Wichtig: HRR ist nur sinnvoll interpretierbar, wenn der Test standardisiert ist
-    (gleiche Belastungsart, Dauer, Intensität, Tageszeit und Erholungssituation).
+    HRR60 = Peak-HF am Ende eines standardisierten Tests minus HF nach 60 Sekunden.
+    Wichtig: Diese Funktion liefert nur einen Basiswert. Die App interpretiert HRR
+    zusätzlich im Kontext von HRV, Ruhepuls, Training Load und subjektiver Müdigkeit.
     """
     if hrr_1min is None:
         return 0.0
@@ -216,6 +217,18 @@ def compute_hrr_badness(hrr_1min: Optional[float]) -> float:
     if hrr_1min >= 12:
         return 70.0
     return 90.0
+
+
+def hrr_interpretation_text(hrr_1min: Optional[float]) -> str:
+    if hrr_1min is None:
+        return "Kein HRR-Test erfasst."
+    if hrr_1min >= 35:
+        return "HRR60 ist schnell. Meist gutes Zeichen, aber im Kontext von Load und Müdigkeit interpretieren."
+    if hrr_1min >= 25:
+        return "HRR60 ist im normalen bis leicht reduzierten Bereich. Verlauf und Standardisierung beachten."
+    if hrr_1min >= 18:
+        return "HRR60 ist verlangsamt. Kreislauf-/Erholungsstatus vorsichtig interpretieren."
+    return "HRR60 ist deutlich verlangsamt. Nur vorsichtig belasten und Test standardisiert wiederholen."
 
 
 def compute_hrv_trend(history_df: pd.DataFrame, current_rmssd: float, current_resting_hr: float, user_id: str) -> dict:
@@ -583,7 +596,8 @@ class FatigueProfilerV4:
             sleep_bad * 0.13 +
             resp_bad * 0.04 +
             hrv_trend_bad * 0.02 +
-            hrv_cv_bad * 0.04
+            hrv_cv_bad * 0.04 +
+            hrr_bad * 0.03
         )
 
         muscular = (
@@ -606,23 +620,15 @@ class FatigueProfilerV4:
             hrr_bad * 0.40
         )
 
-        # V4: globale Belastung reagiert stärker auf kombinierte Belastung und Kompensation.
-        global_load = (
-            central * 0.32 +
-            muscular * 0.24 +
-            illness * 0.24 +
-            circulatory * 0.08 +
-            load_bad * 0.07 +
-            compensation * 0.05 +
-            hrv_cv_bad * 0.05
-        )
-
+        # Gesamtstatus: Der Erholungsindex übernimmt die globale Einordnung.
+        # Das frühere Profil "Globale Belastung" wurde bewusst entfernt,
+        # damit die dominante Profilanzeige nur konkrete Ursachen zeigt.
         recovery = 100 - (
-            central * 0.28 +
+            central * 0.30 +
             muscular * 0.23 +
             illness * 0.30 +
-            circulatory * 0.06 +
-            load_bad * 0.10 +
+            circulatory * 0.07 +
+            load_bad * 0.08 +
             compensation * 0.03 +
             hrv_cv_bad * 0.04
         )
@@ -635,22 +641,18 @@ class FatigueProfilerV4:
 
         if compensation >= 50:
             recovery = min(recovery, 55)
-            global_load = max(global_load, 55)
 
         if stress_bad >= 85 and sleep_bad >= 70 and fatigue_bad >= 70:
             recovery = min(recovery, 60)
-            global_load = max(global_load, 55)
 
         if load_bad >= 90 and fatigue_bad >= 80 and sleep_bad >= 70:
-            global_load = max(global_load, 75)
+            recovery = min(recovery, 45)
 
         if hrv_cv_bad >= 45:
-            global_load = max(global_load, 50)
             recovery = min(recovery, 70)
 
         if hrr_bad >= 70:
             recovery = min(recovery, 60)
-            global_load = max(global_load, 55)
 
         # Freshness/Saturation: bei tieferem LnRMSSD, aber sehr tiefem Ruhepuls und stabiler subjektiver Lage
         # wird Recovery nicht automatisch abgestraft.
@@ -661,7 +663,6 @@ class FatigueProfilerV4:
             "Erholungsindex": self.clamp(recovery, 0, 95),
             "Zentrale Erschöpfung": self.clamp(central, 0, 100),
             "Muskuläre Ermüdung": self.clamp(muscular, 0, 100),
-            "Globale Belastung": self.clamp(global_load, 0, 100),
             "Kreislaufregulation": self.clamp(circulatory, 0, 100),
             "Krankheitssymptome": self.clamp(illness, 0, 100),
             "Kompensationsbelastung": self.clamp(compensation, 0, 100),
@@ -790,8 +791,6 @@ class FatigueProfilerV4:
             return "Heute eher lockeres Training, Stress reduzieren, Schlaf und Regeneration priorisieren."
         if profile == "Muskuläre Ermüdung":
             return "Heute keine harte muskuläre Belastung. Lockeres Training, Mobility oder aktive Erholung."
-        if profile == "Globale Belastung":
-            return "Mehrere Systeme wirken belastet. Trainingsintensität deutlich reduzieren."
         if profile == "Kreislaufregulation":
             return "Kreislaufregulation auffällig. Belastung vorsichtig wählen und Verlauf beobachten."
         if profile == "Krankheitssymptome":
@@ -976,19 +975,30 @@ with st.sidebar.expander("Optional: Blutdruck", expanded=False):
         baseline_systolic_bp = None
         baseline_diastolic_bp = None
 
-with st.sidebar.expander("Optional: Heart Rate Recovery", expanded=False):
+with st.sidebar.expander("Optional: Heart Rate Recovery - 3-Minuten-Test", expanded=False):
     st.caption(
-        "HRR nur verwenden, wenn der Test immer gleich durchgeführt wird "
-        "(gleiche Belastungsart, Dauer, Intensität, Tageszeit und Erholungssituation)."
+        "Standardvorschlag: 3 Minuten kontrolliert harte Belastung (ca. 85-90 % HFmax oder RPE 8/10), "
+        "danach sofort absitzen, nicht sprechen und die Herzfrequenz nach 60 Sekunden erfassen. "
+        "HRR60 = Peak-HF minus HF nach 60 Sekunden."
     )
-    use_hrr = st.checkbox("HRR-Test einbeziehen")
+    st.info(
+        "HRR bitte nur vergleichen, wenn Belastungsart, Dauer, Intensität, Tageszeit und Erholungssituation "
+        "möglichst gleich bleiben. Schneller ist nicht immer besser; die App interpretiert HRR im Kontext."
+    )
+    use_hrr = st.checkbox("Standardisierten HRR-Test einbeziehen")
     if use_hrr:
+        hrr_test_type = st.selectbox(
+            "Testart",
+            ["3-Minuten-Stufentest / kontrolliert hart", "anderer standardisierter Test"],
+        )
         hr_peak_exercise = st.number_input("Peak-Herzfrequenz am Ende des Tests", min_value=1, value=170, step=1)
-        hr_1min_recovery = st.number_input("Herzfrequenz nach 1 Minute Erholung", min_value=1, value=140, step=1)
+        hr_1min_recovery = st.number_input("Herzfrequenz nach 1 Minute sitzender Erholung", min_value=1, value=140, step=1)
         hrr_1min = max(0, hr_peak_exercise - hr_1min_recovery)
         hrr_badness_value = compute_hrr_badness(hrr_1min)
-        st.metric("HRR 1 Minute", hrr_1min)
+        st.metric("HRR60", hrr_1min)
+        st.caption(hrr_interpretation_text(hrr_1min))
     else:
+        hrr_test_type = "kein HRR-Test"
         hr_peak_exercise = None
         hr_1min_recovery = None
         hrr_1min = None
@@ -1074,6 +1084,7 @@ if st.sidebar.button("Aktuelle Messung speichern"):
             "Ruhepuls": resting_hr,
             "Baseline Ruhepuls": baseline_resting_hr,
             "Atemfrequenz": respiratory_rate,
+            "HRR Testart": hrr_test_type,
             "HRR 1 Minute": hrr_1min,
             "HRR Badness": hrr_badness_value,
             "Allgemeine Müdigkeit": general_fatigue,
@@ -1172,17 +1183,20 @@ if hrv_trend["saturation_score"] >= 40:
     st.info("Mögliche HRV-Saturation nach Plews: Tiefer Ruhepuls/R-R-Kontext verändert die Interpretation einer tieferen HRV.")
 
 if hrr_badness_value >= 45:
-    st.warning("Heart Rate Recovery auffällig. Bitte nur interpretieren, wenn der HRR-Test standardisiert durchgeführt wurde.")
+    st.warning(
+        "Heart Rate Recovery verlangsamt oder auffällig. Bitte nur interpretieren, wenn der 3-Minuten-Test "
+        "standardisiert durchgeführt wurde. HRR ist ein Kontextmarker und kein alleiniger Readiness-Wert."
+    )
 
 st.divider()
-st.subheader("Fatigue Profile Scores")
+st.subheader("Readiness-Profile")
 profile_df = pd.DataFrame(list(result["profile_scores"].items()), columns=["Profil", "Score"])
 st.dataframe(profile_df, use_container_width=True)
 fig, ax = plt.subplots(figsize=(10, 5))
 ax.bar(profile_df["Profil"], profile_df["Score"])
 ax.set_ylim(0, 100)
 ax.set_ylabel("Score")
-ax.set_title("Fatigue Profile Scores")
+ax.set_title("Readiness-Profile")
 plt.xticks(rotation=30, ha="right")
 st.pyplot(fig)
 
@@ -1250,6 +1264,6 @@ st.divider()
 st.caption(
     "Hinweis: Dieses Modell ist ein heuristisches Monitoring-Tool und ersetzt keine medizinische Diagnostik. "
     "Die Readiness-App interpretiert HRV trendbasiert über LnRMSSD, berücksichtigt HRV-Stabilität/CV, "
-    "mögliche HRV-Saturation nach Plews, optionale Heart Rate Recovery und erkennt mögliche parasympathische "
-    "Kompensation bei hoher RMSSD, tiefem Ruhepuls und Belastungszeichen."
+    "mögliche HRV-Saturation nach Plews, optionale Heart Rate Recovery als Kontextmarker und erkennt mögliche "
+    "parasympathische Kompensation bei hoher RMSSD, tiefem Ruhepuls und Belastungszeichen."
 )
