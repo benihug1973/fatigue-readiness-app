@@ -483,12 +483,25 @@ class FatigueProfilerV4:
         return self.clamp(self.hr_delta() * 10, 0, 100)
 
     def load_badness(self):
+        """Progressive ACWR-Bewertung statt harter Deckelung ab 1.5.
+
+        Ziel: Auch bei sehr hohen ACWR-Werten soll die App noch auf
+        Veränderungen der Session-RPE-Intensität reagieren. Früher wurde
+        bereits ab ACWR >= 1.5 immer 100 vergeben; dadurch blieben
+        Szenarien mit RPE 9, 7 oder 4 praktisch gleich bewertet.
+        """
         ratio = self.acwr()
         if ratio <= 1.0:
             return 0
-        if ratio >= 1.5:
-            return 100
-        return self.clamp((ratio - 1.0) / 0.5 * 100, 0, 100)
+        if ratio <= 1.3:
+            return self.clamp((ratio - 1.0) / 0.3 * 40, 0, 40)
+        if ratio <= 1.8:
+            return self.clamp(40 + (ratio - 1.3) / 0.5 * 35, 40, 75)
+        if ratio <= 2.5:
+            return self.clamp(75 + (ratio - 1.8) / 0.7 * 20, 75, 95)
+        # Ab hier bleibt die Belastung sehr hoch, aber nicht vollständig
+        # gesättigt. So bleibt noch etwas Differenzierung möglich.
+        return self.clamp(95 + min((ratio - 2.5) * 1.0, 5), 95, 100)
 
     def respiratory_badness(self):
         rr = self.d.respiratory_rate
@@ -745,7 +758,9 @@ class FatigueProfilerV4:
             score = min(score, 60)
 
         if self.d.hrv_cv_badness >= 60:
-            score = min(score, 60)
+            # HRV-Instabilität bleibt ein Warnsignal, soll aber andere
+            # Eingaben wie Session-RPE nicht vollständig überdecken.
+            score = min(score, 70)
 
         if self.hrr_badness() >= 70:
             score = min(score, 60)
@@ -831,8 +846,8 @@ class FatigueProfilerV4:
 # STREAMLIT UI
 # =============================
 
-st.set_page_config(page_title="Readiness-App", page_icon="🏃", layout="wide")
-st.title("🏃 Readiness-App")
+st.set_page_config(page_title="Readiness-App V7.1", page_icon="🏃", layout="wide")
+st.title("🏃 Readiness-App V7.1")
 st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Session-RPE-Load und Google-Sheet-Speicherung")
 
 if google_sheets_configured():
