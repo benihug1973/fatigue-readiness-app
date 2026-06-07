@@ -132,7 +132,7 @@ def ln_rmssd(value: float) -> float:
 def training_type_factor(training_type: str) -> float:
     factors = {
         "Ausdauer": 1.00,
-        "Recovery Training": 0.55,
+        "Recovery Training": 0.70,
         "HIIT": 1.35,
         "Wettkampf": 1.60,
         "Kraft": 1.15,
@@ -204,31 +204,39 @@ def compute_hrr_badness(hrr_1min: Optional[float]) -> float:
 
     HRR60 = Peak-HF am Ende eines standardisierten Tests minus HF nach 60 Sekunden.
     Wichtig: Diese Funktion liefert nur einen Basiswert. Die App interpretiert HRR
-    zusätzlich im Kontext von HRV, Ruhepuls, Training Load und subjektiver Müdigkeit.
+    zusätzlich im Kontext von HRV, Ruhepuls, Blutdruck, Atemfrequenz, Training Load
+    und subjektiver Müdigkeit. Sehr tiefe Werte (<= 12 bpm) gelten als deutlich
+    auffällig und sollen standardisiert wiederholt werden.
     """
     if hrr_1min is None:
         return 0.0
-    if hrr_1min >= 35:
+    if hrr_1min >= 40:
         return 0.0
+    if hrr_1min >= 35:
+        return 8.0
     if hrr_1min >= 25:
-        return 20.0
+        return 25.0
     if hrr_1min >= 18:
-        return 45.0
+        return 50.0
     if hrr_1min >= 12:
-        return 70.0
-    return 90.0
+        return 75.0
+    return 95.0
 
 
 def hrr_interpretation_text(hrr_1min: Optional[float]) -> str:
     if hrr_1min is None:
         return "Kein HRR-Test erfasst."
+    if hrr_1min >= 40:
+        return "HRR60 ist sehr schnell. Meist ein gutes Zeichen, aber immer im Kontext von Load, Müdigkeit und Trainingsphase interpretieren."
     if hrr_1min >= 35:
-        return "HRR60 ist schnell. Meist gutes Zeichen, aber im Kontext von Load und Müdigkeit interpretieren."
+        return "HRR60 ist gut. Verlauf und Standardisierung beachten."
     if hrr_1min >= 25:
-        return "HRR60 ist im normalen bis leicht reduzierten Bereich. Verlauf und Standardisierung beachten."
+        return "HRR60 ist moderat bis gut. Der Wert ist brauchbar, wenn der Test standardisiert durchgeführt wurde."
     if hrr_1min >= 18:
-        return "HRR60 ist verlangsamt. Kreislauf-/Erholungsstatus vorsichtig interpretieren."
-    return "HRR60 ist deutlich verlangsamt. Nur vorsichtig belasten und Test standardisiert wiederholen."
+        return "HRR60 ist verlangsamt. Heute keine maximale Belastung; Test unter gleichen Bedingungen wiederholen."
+    if hrr_1min >= 12:
+        return "HRR60 ist deutlich verlangsamt. Nur lockere Belastung und den Test standardisiert wiederholen."
+    return "HRR60 ist sehr tief und auffällig. Das kann ein Test-/Messfehler sein, bei gleichzeitig hohem Blutdruck oder erhöhter Atemfrequenz aber auch ein echtes Kreislauf-Warnsignal. Heute keine intensive Belastung und Test wiederholen."
 
 
 def compute_hrv_trend(history_df: pd.DataFrame, current_rmssd: float, current_resting_hr: float, user_id: str) -> dict:
@@ -292,6 +300,8 @@ def compute_hrv_trend(history_df: pd.DataFrame, current_rmssd: float, current_re
         "lnrmssd_rr_ratio_rolling": None,
         "saturation_score": 0.0,
         "freshness_score": 0.0,
+        "hrv_outlier_score": 0.0,
+        "measurement_warning": "",
         "explanation": "Für eine erste HRV-Trendbewertung werden mindestens 3 gültige Messungen pro User benötigt.",
     }
 
@@ -310,6 +320,24 @@ def compute_hrv_trend(history_df: pd.DataFrame, current_rmssd: float, current_re
     trend_delta = ln_rolling - baseline_mean
     lower = baseline_mean - swc
     upper = baseline_mean + swc
+
+    # Plausibilitätscheck: Ein einzelner sehr starker RMSSD/LnRMSSD-Sprung kann
+    # physiologisch echt sein, aber auch durch Messfehler, Sensor-Kontakt, andere
+    # Messzeit, Bewegung, Atmung oder Alkohol entstehen. Deshalb wird er als
+    # Warnhinweis ausgegeben und nicht blind als definitive Ermüdung gewertet.
+    ln_current = ln_rmssd(current_rmssd)
+    current_delta = ln_current - baseline_mean
+    outlier_limit = max(0.35, 3.0 * swc)
+    hrv_outlier_score = 0.0
+    measurement_warning = ""
+    if abs(current_delta) >= outlier_limit:
+        hrv_outlier_score = min(100.0, 55.0 + ((abs(current_delta) - outlier_limit) / max(outlier_limit, 0.01)) * 45.0)
+        direction = "höher" if current_delta > 0 else "tiefer"
+        measurement_warning = (
+            f"Die heutige HRV/RMSSD-Messung liegt ungewöhnlich stark {direction} als dein individueller Verlauf. "
+            "Das kann echte Belastung/Erholung anzeigen, aber auch ein Messfehler sein. Bitte Messung möglichst "
+            "standardisiert wiederholen oder spätestens morgen erneut messen."
+        )
 
     # HRV-Stabilität / CV: Plews/Esco-Logik, aber pragmatisch mit LnRMSSD-SD/CV.
     rolling_values = temp_df["LnRMSSD"].tail(rolling_window)
@@ -388,6 +416,8 @@ def compute_hrv_trend(history_df: pd.DataFrame, current_rmssd: float, current_re
         "lnrmssd_rr_ratio_rolling": ratio_rolling,
         "saturation_score": float(saturation_score),
         "freshness_score": float(freshness_score),
+        "hrv_outlier_score": float(hrv_outlier_score),
+        "measurement_warning": measurement_warning,
         "explanation": explanation,
     })
     return result
@@ -423,6 +453,8 @@ class UserInputV4:
     hrv_cv_badness: float = 0.0
     hrv_saturation_score: float = 0.0
     hrv_freshness_score: float = 0.0
+    hrv_outlier_score: float = 0.0
+    hrv_measurement_warning: str = ""
     hrr_1min: Optional[float] = None
     hrr_badness_value: float = 0.0
 
@@ -461,6 +493,11 @@ class FatigueProfilerV4:
                 self.d.hrv_trend_badness * 0.25 +
                 self.d.hrv_cv_badness * 0.15
             )
+            # Wenn der aktuelle Wert ein starker Ausreisser ist, wird ein Messfehler-Hinweis
+            # ausgegeben. Der Wert wird nicht komplett ignoriert, aber weniger hart bestraft,
+            # solange nicht weitere klare Warnzeichen vorliegen.
+            if self.d.hrv_outlier_score >= 70:
+                combined = min(combined, 55 + single_day_badness * 0.20)
             # Plews-Logik: bei möglicher HRV-Saturation tiefe HRV nicht zu hart bestrafen.
             if self.d.hrv_saturation_score >= 40:
                 combined *= 0.55
@@ -629,9 +666,16 @@ class FatigueProfilerV4:
         )
 
         circulatory = (
-            bp_bad * 0.60 +
-            hrr_bad * 0.40
+            bp_bad * 0.55 +
+            hrr_bad * 0.45
         )
+
+        # Kombinationen aus sehr tiefer HRR, hohem Blutdruck und erhöhter Atemfrequenz
+        # werden stärker gewichtet als isolierte Einzelwerte.
+        if hrr_bad >= 90 and bp_bad >= 70:
+            circulatory = max(circulatory, 88)
+        if hrr_bad >= 90 and bp_bad >= 70 and resp_bad >= 30:
+            circulatory = max(circulatory, 95)
 
         # Gesamtstatus: Der Erholungsindex übernimmt die globale Einordnung.
         # Das frühere Profil "Globale Belastung" wurde bewusst entfernt,
@@ -665,7 +709,11 @@ class FatigueProfilerV4:
             recovery = min(recovery, 70)
 
         if hrr_bad >= 70:
-            recovery = min(recovery, 60)
+            recovery = min(recovery, 55)
+        if hrr_bad >= 90 and bp_bad >= 70:
+            recovery = min(recovery, 45)
+        if hrr_bad >= 90 and bp_bad >= 70 and resp_bad >= 30:
+            recovery = min(recovery, 35)
 
         # Freshness/Saturation: bei tieferem LnRMSSD, aber sehr tiefem Ruhepuls und stabiler subjektiver Lage
         # wird Recovery nicht automatisch abgestraft.
@@ -697,8 +745,10 @@ class FatigueProfilerV4:
             drivers.append("7-Messpunkt-LnRMSSD-Trend unter individueller Schwelle")
         if self.d.hrv_trend_status == "über Baseline - Kontext prüfen":
             drivers.append("LnRMSSD-Trend über Schwelle: Kontext mit Load, Puls und Müdigkeit prüfen")
+        if self.d.hrv_measurement_warning:
+            drivers.append("HRV-Messung ungewöhnlich: Messung wiederholen oder morgen erneut standardisiert messen")
         if self.d.hrv_cv_badness >= 45:
-            drivers.append("HRV-Stabilität auffällig: hohe Tag-zu-Tag-Schwankung im LnRMSSD")
+            drivers.append("HRV-Stabilität auffällig: stärkere Tag-zu-Tag-Schwankung im LnRMSSD")
         if self.d.hrv_saturation_score >= 40:
             drivers.append("Mögliche HRV-Saturation: tiefer Ruhepuls verändert die HRV-Interpretation")
         if self.d.hrv_freshness_score >= 45:
@@ -763,7 +813,11 @@ class FatigueProfilerV4:
             score = min(score, 70)
 
         if self.hrr_badness() >= 70:
-            score = min(score, 60)
+            score = min(score, 55)
+        if self.hrr_badness() >= 90 and self.bp_badness() >= 70:
+            score = min(score, 45)
+        if self.hrr_badness() >= 90 and self.bp_badness() >= 70 and self.respiratory_badness() >= 30:
+            score = min(score, 40)
 
         if self.load_badness() >= 90 and self.d.general_fatigue >= 8 and self.d.sleep_quality <= 3:
             score = min(score, 35)
@@ -784,35 +838,155 @@ class FatigueProfilerV4:
         return self.clamp(score, 0, 95)
 
     def recommendation(self, profile):
+        """Konkrete, profil- und situationsabhängige Trainingsempfehlung.
+
+        Ziel: Nicht nur "kontrolliert trainieren", sondern eine konkrete
+        Handlungsempfehlung: Pause, lockere Grundlagenausdauer, Technik,
+        kurze Steigerungen oder intensive Einheit.
+        """
+        readiness = self.training_readiness()
+        fatigue_bad = self.bad_from_1_to_10(self.d.general_fatigue)
+        stress_bad = self.bad_from_1_to_10(self.d.mental_stress)
+        soreness_bad = self.bad_from_1_to_10(self.d.muscle_soreness)
+        sleep_bad = 100 - self.good_from_1_to_10(self.d.sleep_quality)
+        hrr_bad = self.hrr_badness()
+        bp_bad = self.bp_badness()
+        resp_bad = self.respiratory_badness()
+        load_bad = self.load_badness()
+
+        # Sicherheitsregeln zuerst.
         if self.d.illness > 6:
-            return "Kein Training empfohlen. Krankheitssymptome sind deutlich erhöht. Erst wieder trainieren, wenn die Symptome stark gesunken sind."
+            return (
+                "Heute kein Training empfohlen. Die Krankheitssymptome sind deutlich erhöht. "
+                "Priorität haben Schlaf, Flüssigkeit und Erholung. Erst wieder trainieren, wenn die Symptome klar gesunken sind."
+            )
         if 3 <= self.d.illness <= 6:
-            return "Nur Training mit tiefer Intensität empfohlen. Keine Intervalle, keine harte Kraftbelastung und keine hohe muskuläre Belastung."
+            return (
+                "Heute höchstens sehr lockere Bewegung: Spaziergang, Mobility oder 20-30 Minuten sehr lockere Grundlagenausdauer. "
+                "Keine Intervalle, keine harten Kraftbelastungen und keine Wettkampfintensität."
+            )
+
+        if hrr_bad >= 90 and bp_bad >= 70:
+            return (
+                "Die Kreislaufwerte sind heute deutlich auffällig: sehr tiefe HRR kombiniert mit erhöhtem Blutdruck. "
+                "Heute keine intensive Belastung. Wenn du dich bewegen möchtest: 15-30 Minuten sehr locker in Zone 1, Mobility oder Spaziergang. "
+                "HRR-Test und Blutdruck unter standardisierten Bedingungen wiederholen; bei Beschwerden medizinisch abklären."
+            )
+        if hrr_bad >= 90:
+            return (
+                "Die Heart Rate Recovery ist sehr tief. Das kann ein Test-/Messfehler sein, aber auch auf unvollständige Erholung hinweisen. "
+                "Heute keine harten Intervalle und keine maximale Kraft. Wenn Training: 20-40 Minuten lockere Grundlagenausdauer in Zone 1-2. "
+                "Den HRR-Test bitte unter gleichen Bedingungen wiederholen."
+            )
+
+        if self.d.hrv_measurement_warning:
+            return (
+                "Die heutige HRV-Messung ist ungewöhnlich und könnte auch ein Messfehler sein. "
+                "Bitte Messung möglichst standardisiert wiederholen oder morgen erneut messen. "
+                "Bis zur Bestätigung: keine maximale Einheit; geeignet sind lockere Grundlagenausdauer, Techniktraining oder Mobility."
+            )
+
         if self.d.hrv_trend_status == "unter Baseline - mögliche Saturation":
-            return "LnRMSSD ist tiefer, aber der tiefe Ruhepuls spricht für mögliche HRV-Saturation. Nicht automatisch als schlechte Erholung werten; Profil und Körpergefühl gemeinsam beurteilen."
+            return (
+                "LnRMSSD ist tiefer, aber der tiefe Ruhepuls spricht für mögliche HRV-Saturation. "
+                "Nicht automatisch als schlechte Erholung werten. Wenn du dich gut fühlst: moderate Einheit möglich; "
+                "keine unnötige Maximalbelastung."
+            )
         if self.d.hrv_trend_status == "unter Baseline":
-            return "Der LnRMSSD-Trend liegt unter der individuellen Schwelle. Heute keine intensive Einheit; besser lockeres Training oder Erholung."
+            return (
+                "Der LnRMSSD-Trend liegt unter deiner individuellen Schwelle. Heute eher aktivierend statt ermüdend trainieren: "
+                "20-45 Minuten Grundlagenausdauer in Zone 1-2, Techniktraining oder Mobility. Keine langen intensiven Intervalle."
+            )
         if self.d.hrv_cv_badness >= 60:
-            return "Die HRV ist über die letzten Messungen instabil. Heute eher kontrolliert trainieren und weitere Messungen beobachten."
-        if self.hrr_badness() >= 70:
-            return "Die Heart Rate Recovery ist langsam. Nur vorsichtig belasten und denselben HRR-Test standardisiert wiederholen."
+            return (
+                "Deine HRV schwankt stärker als üblich. Das kann Belastung, Erholung oder einen Messfehler widerspiegeln. "
+                "Heute geeignet: lockere Grundlagenausdauer, Techniktraining, Bewegungsqualität oder Mobility. "
+                "Wenn du dich sehr gut fühlst, sind kurze Steigerungen möglich; keine erschöpfende Einheit."
+            )
         if self.compensation_badness() >= 50:
-            return "Mögliche parasympathische Kompensation: RMSSD ist hoch und der Ruhepuls tief, gleichzeitig bestehen Belastungszeichen. Heute keine intensive Einheit; kontrolliert oder locker trainieren."
+            return (
+                "Mögliche Kompensationsbelastung: hohe RMSSD und tiefer Ruhepuls wirken gut, passen aber nicht zu Load/Müdigkeit/Schlaf. "
+                "Heute keine Hero-Session. Besser: lockere bis moderate Grundlagenausdauer, Technik oder kurze Aktivierung. "
+                "Intensität nur erhöhen, wenn dies bewusst Teil eines geplanten Belastungsblocks ist."
+            )
         if self.d.hrv_trend_status == "über Baseline - Kontext prüfen" and (self.d.general_fatigue >= 7 or self.d.acute_load / self.d.chronic_load > 1.3):
-            return "Der LnRMSSD-Trend ist erhöht, gleichzeitig gibt es Belastungszeichen. Nicht automatisch als top erholt interpretieren; heute eher kontrolliert trainieren."
-        if profile == "Erholungsindex":
-            return "Gute bis solide Erholung. Training möglich, Intensität abhängig von Ziel und Load."
+            return (
+                "Der LnRMSSD-Trend ist erhöht, gleichzeitig gibt es Belastungszeichen. Hohe HRV nicht automatisch als top erholt interpretieren. "
+                "Heute: Grundlagenausdauer Zone 1-2, Techniktraining oder eine moderate Einheit ohne Erschöpfung."
+            )
+
+        # Profil-spezifische Empfehlungen.
         if profile == "Zentrale Erschöpfung":
-            return "Heute eher lockeres Training, Stress reduzieren, Schlaf und Regeneration priorisieren."
+            if readiness < 45:
+                return (
+                    "Dein Nervensystem wirkt deutlich belastet. Heute keine HIIT-Einheit, keine Wettkampfintensität und keine Maximalkraft. "
+                    "Empfehlung: 20-40 Minuten lockere Grundlagenausdauer in Zone 1-2, Mobility oder Techniktraining mit niedriger bis moderater Intensität."
+                )
+            return (
+                "Moderate zentrale Ermüdung. Ziel: Organismus aktivieren, ohne zusätzlich stark zu ermüden. "
+                "Geeignet sind Grundlagenausdauer, Techniktraining, Koordination oder kurze Steigerungen, falls du dich subjektiv gut fühlst. "
+                "Keine langen harten Intervalle."
+            )
+
         if profile == "Muskuläre Ermüdung":
-            return "Heute keine harte muskuläre Belastung. Lockeres Training, Mobility oder aktive Erholung."
+            if soreness_bad >= 70 or readiness < 45:
+                return (
+                    "Die Muskulatur ist deutlich belastet. Heute keine schwere Kraft, keine hohen Volumenblöcke und keine harten Berg-/Sprintbelastungen. "
+                    "Empfehlung: lockere Grundlagenausdauer, Mobility, Technik oder alternative Muskelgruppen."
+                )
+            return (
+                "Muskuläre Ermüdung ist vorhanden, aber nicht zwingend ein Pausengrund. "
+                "Geeignet sind lockere Grundlagenausdauer, Techniktraining und Bewegungsqualität. "
+                "Wenn du dich gut fühlst: kurze Steigerungen oder kurze Schnelligkeitsreize sind möglich, aber keine erschöpfende Einheit."
+            )
+
         if profile == "Kreislaufregulation":
-            return "Kreislaufregulation auffällig. Belastung vorsichtig wählen und Verlauf beobachten."
+            return (
+                "Herz-Kreislauf-Werte sind auffällig. Heute keine maximale Belastung, keine langen Intervalle und kein Wettkampftraining. "
+                "Wenn Training: 15-40 Minuten sehr locker bis locker in Zone 1-2. Blutdruck/HRR bei auffälligen Werten erneut standardisiert prüfen."
+            )
+
         if profile == "Krankheitssymptome":
-            return "Krankheitssymptome beachten. Nur sehr lockere Belastung, wenn Symptome gering sind."
+            return (
+                "Krankheitssymptome beachten. Wenn überhaupt, nur sehr lockere Bewegung ohne Atemnot oder Druckgefühl: Spaziergang, Mobility oder kurze lockere Zone-1-Einheit. "
+                "Keine Intensität, solange Symptome bestehen."
+            )
+
         if profile == "Kompensationsbelastung":
-            return "Mögliche parasympathische Kompensation. Hohe RMSSD hier nicht automatisch als sehr gute Erholung interpretieren."
-        return "Moderate Belastung und Selbstbeobachtung empfohlen."
+            return (
+                "Hohe HRV bedeutet heute möglicherweise nicht automatisch gute Erholung. "
+                "Besser aktivierend statt ermüdend: Grundlagenausdauer Zone 1-2, Techniktraining oder kurze Aktivierung. "
+                "Keine maximale Einheit, ausser ein geplanter Intensitäts-/Belastungsblock wird bewusst durchgeführt und der Verlauf wird eng beobachtet."
+            )
+
+        if profile == "Erholungsindex":
+            if readiness >= 75:
+                return (
+                    "Gute Voraussetzungen für Training. Je nach Trainingsplan sind intensive Intervalle, Krafttraining oder eine längere Einheit möglich. "
+                    "Trotzdem primäres/sekundäres Profil und Körpergefühl beachten."
+                )
+            if readiness >= 55:
+                return (
+                    "Solide, aber nicht perfekte Readiness. Geeignet sind Grundlagenausdauer, Techniktraining oder moderate Kraft. "
+                    "Wenn du dich gut fühlst, kannst du kurze Steigerungen einbauen. Vermeide unnötig lange erschöpfende Einheiten."
+                )
+            return (
+                "Readiness ist reduziert. Heute eher aktivierend trainieren: lockere Grundlagenausdauer, Mobility oder Technik. "
+                "Keine maximale Intensität."
+            )
+
+        # Zusätzlicher Kontext für hohe Last, falls kein anderes Profil dominiert.
+        if load_bad >= 80 and fatigue_bad < 55 and sleep_bad < 55:
+            return (
+                "Der akute Load ist hoch, aber die subjektiven Signale sind nicht stark auffällig. "
+                "Wenn dies ein geplanter Belastungsblock ist, kann eine höhere Belastung bewusst akzeptiert werden. "
+                "Verlauf, Schlaf, Symptome und HRV in den nächsten Tagen eng beobachten."
+            )
+
+        return (
+            "Moderate Einheit möglich. Am sinnvollsten: Grundlagenausdauer, Techniktraining, Koordination oder moderate Kraft. "
+            "Kurze Steigerungen sind möglich, wenn du dich gut fühlst; keine Einheit bis zur Erschöpfung."
+        )
 
     def run(self):
         primary, confidence, secondary, scores = self.dominant_profile()
@@ -836,6 +1010,7 @@ class FatigueProfilerV4:
                 "HRV Instabilität": round(self.d.hrv_cv_badness, 1),
                 "HRV Saturation": round(self.hrv_saturation_score(), 1),
                 "Freshness Score": round(self.hrv_freshness_score(), 1),
+                "HRV Ausreisser / Messwarnung": round(self.d.hrv_outlier_score, 1),
                 "Heart Rate Recovery Badness": round(self.hrr_badness(), 1),
                 "Kompensationsbelastung": round(self.compensation_badness(), 1),
             }
@@ -846,8 +1021,8 @@ class FatigueProfilerV4:
 # STREAMLIT UI
 # =============================
 
-st.set_page_config(page_title="Readiness-App V7.1", page_icon="🏃", layout="wide")
-st.title("🏃 Readiness-App V7.1")
+st.set_page_config(page_title="Readiness-App V9", page_icon="🏃", layout="wide")
+st.title("🏃 Readiness-App V9")
 st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Session-RPE-Load und Google-Sheet-Speicherung")
 
 if google_sheets_configured():
@@ -1061,6 +1236,8 @@ data = UserInputV4(
     hrv_cv_badness=hrv_trend["cv_badness"],
     hrv_saturation_score=hrv_trend["saturation_score"],
     hrv_freshness_score=hrv_trend["freshness_score"],
+    hrv_outlier_score=hrv_trend["hrv_outlier_score"],
+    hrv_measurement_warning=hrv_trend["measurement_warning"],
     hrr_1min=hrr_1min,
     hrr_badness_value=hrr_badness_value,
 )
@@ -1125,6 +1302,8 @@ if st.sidebar.button("Aktuelle Messung speichern"):
             "LnRMSSD RR Ratio": round(hrv_trend["lnrmssd_rr_ratio_current"], 6),
             "HRV Saturation Score": round(hrv_trend["saturation_score"], 1),
             "Freshness Score": round(hrv_trend["freshness_score"], 1),
+            "HRV Outlier Score": round(hrv_trend["hrv_outlier_score"], 1),
+            "HRV Messwarnung": hrv_trend["measurement_warning"],
             "Wochenmittel LnRMSSD aktuell": None if hrv_trend["weekly_mean_current"] is None else round(hrv_trend["weekly_mean_current"], 4),
             "Wochenmittel LnRMSSD vorher": None if hrv_trend["weekly_mean_previous"] is None else round(hrv_trend["weekly_mean_previous"], 4),
             "Wochenmittel Delta": None if hrv_trend["weekly_mean_delta"] is None else round(hrv_trend["weekly_mean_delta"], 4),
@@ -1191,8 +1370,11 @@ if compensation_value >= 50:
         "treten zusammen mit Load/Müdigkeit/Muskelschmerzen oder schlechtem Schlaf auf."
     )
 
+if hrv_trend["measurement_warning"]:
+    st.warning(hrv_trend["measurement_warning"])
+
 if hrv_trend["cv_badness"] >= 45:
-    st.warning("HRV-Stabilität auffällig: Die LnRMSSD-Werte schwanken über die letzten Messungen stärker als erwünscht.")
+    st.warning("HRV-Stabilität auffällig: Die LnRMSSD-Werte schwanken über die letzten Messungen stärker als üblich. Das kann echte Belastung oder auch Messvariabilität bedeuten.")
 
 if hrv_trend["saturation_score"] >= 40:
     st.info("Mögliche HRV-Saturation nach Plews: Tiefer Ruhepuls/R-R-Kontext verändert die Interpretation einer tieferen HRV.")
@@ -1200,7 +1382,8 @@ if hrv_trend["saturation_score"] >= 40:
 if hrr_badness_value >= 45:
     st.warning(
         "Heart Rate Recovery verlangsamt oder auffällig. Bitte nur interpretieren, wenn der 3-Minuten-Test "
-        "standardisiert durchgeführt wurde. HRR ist ein Kontextmarker und kein alleiniger Readiness-Wert."
+        "standardisiert durchgeführt wurde. Bei sehr tiefer HRR (z.B. <=12 bpm) Test wiederholen; zusammen mit "
+        "hohem Blutdruck oder erhöhter Atemfrequenz heute keine intensive Belastung."
     )
 
 st.divider()
@@ -1248,7 +1431,7 @@ else:
         mime="text/csv",
     )
 
-    chart_cols = ["Training Readiness", "Work Readiness", "RMSSD", "Ruhepuls", "Krankheitssymptome", "Kompensationsbelastung", "HRV CV Badness", "HRV Saturation Score", "Freshness Score", "Schlafqualität", "Mentaler Stress"]
+    chart_cols = ["Training Readiness", "Work Readiness", "RMSSD", "Ruhepuls", "Krankheitssymptome", "Kompensationsbelastung", "HRV CV Badness", "HRV Outlier Score", "HRV Saturation Score", "Freshness Score", "Schlafqualität", "Mentaler Stress"]
     existing_chart_cols = [c for c in chart_cols if c in display_history_df.columns]
 
     if existing_chart_cols and len(display_history_df) >= 2:
@@ -1279,6 +1462,6 @@ st.divider()
 st.caption(
     "Hinweis: Dieses Modell ist ein heuristisches Monitoring-Tool und ersetzt keine medizinische Diagnostik. "
     "Die Readiness-App interpretiert HRV trendbasiert über LnRMSSD, berücksichtigt HRV-Stabilität/CV, "
-    "mögliche HRV-Saturation nach Plews, optionale Heart Rate Recovery als Kontextmarker und erkennt mögliche "
-    "parasympathische Kompensation bei hoher RMSSD, tiefem Ruhepuls und Belastungszeichen."
+    "mögliche HRV-Saturation nach Plews, optionale Heart Rate Recovery als Kontextmarker, HRV-Ausreisser/Messwarnungen "
+    "und konkrete Trainingsempfehlungen für Grundlagenausdauer, Technik, Aktivierung oder Erholung."
 )
