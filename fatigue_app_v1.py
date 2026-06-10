@@ -447,6 +447,7 @@ class UserInputV4:
     illness: int = 1
     sleep_quality: int = 10
     mood: int = 10
+    analysis_mode: str = "Komplette Version"
     hrv_trend_status: str = "nicht genügend Messungen"
     hrv_trend_badness: float = 0.0
     hrv_valid_measurements: int = 0
@@ -637,6 +638,55 @@ class FatigueProfilerV4:
 
         compensation = self.compensation_badness()
 
+        if self.d.analysis_mode == "Kurzversion":
+            # Kurzversion: Nur Trainingload, Ruhepuls und subjektive Werte werden analysiert.
+            # HRV, HRR, Blutdruck und Atemfrequenz werden bewusst nicht einbezogen.
+            central = (
+                hr_bad * 0.22 +
+                stress_bad * 0.28 +
+                fatigue_bad * 0.25 +
+                sleep_bad * 0.17 +
+                load_bad * 0.08
+            )
+
+            muscular = (
+                soreness_bad * 0.58 +
+                load_bad * 0.24 +
+                fatigue_bad * 0.18
+            )
+
+            illness = (
+                illness_bad * 0.76 +
+                hr_bad * 0.10 +
+                sleep_bad * 0.10 +
+                mood_bad * 0.04
+            )
+
+            recovery = 100 - (
+                central * 0.34 +
+                muscular * 0.28 +
+                illness * 0.30 +
+                load_bad * 0.08
+            )
+
+            if self.d.illness > 6:
+                recovery = min(recovery, 40)
+            elif 3 <= self.d.illness <= 6:
+                recovery = min(recovery, 65)
+
+            if stress_bad >= 85 and sleep_bad >= 70 and fatigue_bad >= 70:
+                recovery = min(recovery, 55)
+
+            if load_bad >= 90 and fatigue_bad >= 80 and sleep_bad >= 70:
+                recovery = min(recovery, 40)
+
+            return {
+                "Erholungsindex": self.clamp(recovery, 0, 95),
+                "Zentrale Erschöpfung": self.clamp(central, 0, 100),
+                "Muskuläre Ermüdung": self.clamp(muscular, 0, 100),
+                "Krankheitssymptome": self.clamp(illness, 0, 100),
+            }
+
         # V4: mentale Belastung und Schlaf wirken etwas stärker auf zentrale Erschöpfung.
         central = (
             hrv_bad * 0.21 +
@@ -738,6 +788,28 @@ class FatigueProfilerV4:
         return primary[0], confidence, secondary[0], scores
 
     def drivers(self):
+        if self.d.analysis_mode == "Kurzversion":
+            drivers = []
+            if self.hr_badness() > 40:
+                drivers.append("Ruhepuls deutlich über Baseline")
+            if self.load_badness() > 40:
+                drivers.append("Akuter Load deutlich höher als chronischer Load")
+            if self.d.general_fatigue >= 7:
+                drivers.append("Allgemeine Müdigkeit hoch")
+            if self.d.muscle_soreness >= 7:
+                drivers.append("Muskuläre Schmerzen hoch")
+            if self.d.mental_stress >= 7:
+                drivers.append("Mentaler Stress hoch")
+            if self.d.illness >= 3:
+                drivers.append("Krankheitssymptome vorhanden")
+            if self.d.sleep_quality <= 4:
+                drivers.append("Schlafqualität tief")
+            if self.d.mood <= 4:
+                drivers.append("Stimmung tief")
+            if not drivers:
+                drivers.append("Keine klaren Belastungstreiber in der Kurzversion erkannt")
+            return drivers
+
         drivers = []
         if self.hrv_badness() > 40:
             drivers.append("RMSSD deutlich unter Baseline oder HRV-Trend auffällig")
@@ -782,6 +854,23 @@ class FatigueProfilerV4:
         return drivers
 
     def training_readiness(self):
+        if self.d.analysis_mode == "Kurzversion":
+            score = (
+                self.hr_score() * 0.18 +
+                self.load_score() * 0.26 +
+                self.subjective_score() * 0.56
+            )
+
+            if self.d.illness > 6:
+                score = min(score, 15)
+            elif 3 <= self.d.illness <= 6:
+                score = min(score, 55)
+
+            if self.load_badness() >= 90 and self.d.general_fatigue >= 8 and self.d.sleep_quality <= 3:
+                score = min(score, 35)
+
+            return self.clamp(score, 0, 95)
+
         score = (
             self.hrv_score() * 0.22 +
             self.hr_score() * 0.12 +
@@ -853,6 +942,48 @@ class FatigueProfilerV4:
         bp_bad = self.bp_badness()
         resp_bad = self.respiratory_badness()
         load_bad = self.load_badness()
+
+        if self.d.analysis_mode == "Kurzversion":
+            if self.d.illness > 6:
+                return (
+                    "Heute kein Training empfohlen. Die Krankheitssymptome sind deutlich erhöht. "
+                    "Priorität haben Schlaf, Flüssigkeit und Erholung. Erst wieder trainieren, wenn die Symptome klar gesunken sind."
+                )
+            if 3 <= self.d.illness <= 6:
+                return (
+                    "Heute höchstens sehr lockere Bewegung: Spaziergang, Mobility oder 20-30 Minuten sehr lockere Grundlagenausdauer. "
+                    "Keine Intervalle, keine harte Kraftbelastung und keine Wettkampfintensität."
+                )
+            if profile == "Zentrale Erschöpfung":
+                return (
+                    "Kurzversion: Die Angaben sprechen vor allem für zentrale Belastung durch Müdigkeit, Stress, Schlaf oder Ruhepuls. "
+                    "Empfehlung: Grundlagenausdauer in Zone 1-2, Techniktraining, Koordination oder Mobility. "
+                    "Wenn du dich subjektiv gut fühlst, sind kurze Steigerungen möglich; keine erschöpfende Einheit."
+                )
+            if profile == "Muskuläre Ermüdung":
+                return (
+                    "Kurzversion: Die muskuläre Belastung steht im Vordergrund. Heute keine schwere Kraft, keine hohen Volumenblöcke und keine langen harten Intervalle. "
+                    "Geeignet sind lockere Grundlagenausdauer, Technik, Mobility oder alternative Muskelgruppen."
+                )
+            if profile == "Krankheitssymptome":
+                return (
+                    "Kurzversion: Krankheitssymptome sind relevant. Wenn überhaupt, nur sehr lockere Bewegung ohne Intensität. "
+                    "Bei zunehmenden Symptomen pausieren."
+                )
+            if profile == "Erholungsindex" and readiness >= 75:
+                return (
+                    "Kurzversion: Die verfügbaren Werte sprechen für gute Readiness. Je nach Trainingsplan sind intensive Einheiten möglich. "
+                    "Beachte trotzdem Körpergefühl, Schlaf und die aktuelle Trainingsphase."
+                )
+            if profile == "Erholungsindex" and readiness >= 55:
+                return (
+                    "Kurzversion: Solide, aber nicht perfekte Readiness. Geeignet sind Grundlagenausdauer, Techniktraining oder moderate Kraft. "
+                    "Kurze Steigerungen sind möglich, wenn du dich gut fühlst; keine Einheit bis zur Erschöpfung."
+                )
+            return (
+                "Kurzversion: Readiness reduziert. Heute eher aktivierend statt ermüdend trainieren: lockere Grundlagenausdauer, Mobility oder Technik. "
+                "Keine maximale Intensität."
+            )
 
         # Sicherheitsregeln zuerst.
         if self.d.illness > 6:
@@ -1021,9 +1152,9 @@ class FatigueProfilerV4:
 # STREAMLIT UI
 # =============================
 
-st.set_page_config(page_title="Readiness-App V9", page_icon="🏃", layout="wide")
-st.title("🏃 Readiness-App V9")
-st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Session-RPE-Load und Google-Sheet-Speicherung")
+st.set_page_config(page_title="Readiness-App V10", page_icon="🏃", layout="wide")
+st.title("🏃 Readiness-App V10")
+st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Session-RPE-Load, Kurz-/Vollversion und Google-Sheet-Speicherung")
 
 if google_sheets_configured():
     st.info("Datenspeicherung: Google Sheet ist konfiguriert.")
@@ -1034,6 +1165,27 @@ st.sidebar.header("Eingabe")
 st.sidebar.subheader("User")
 user_id = st.sidebar.text_input("User-ID", value="test_user_01", help="Bitte eindeutige ID verwenden, z.B. athlete_01 oder beni_01.")
 st.sidebar.caption("Jede gespeicherte Messung wird mit dieser User-ID abgelegt.")
+
+st.sidebar.divider()
+st.sidebar.subheader("Analysemodus")
+analysis_mode = st.sidebar.radio(
+    "Welche Version möchtest du ausfüllen?",
+    ["Kurzversion", "Komplette Version"],
+    index=0,
+    help=(
+        "Kurzversion: Trainingload, Ruhepuls und subjektive Werte. "
+        "Komplette Version: zusätzlich HRV, Atmung, optional Blutdruck und HRR."
+    ),
+)
+use_short_version = analysis_mode == "Kurzversion"
+
+if use_short_version:
+    st.sidebar.info(
+        "Kurzversion aktiv: HRV, HRR, Blutdruck und Atemfrequenz werden nicht abgefragt "
+        "und auch nicht in die Analyse einbezogen."
+    )
+else:
+    st.sidebar.info("Komplette Version aktiv: alle verfügbaren Messwerte können einbezogen werden.")
 
 # =============================
 # NUTZERLEITFADEN PDF
@@ -1141,58 +1293,83 @@ with st.sidebar.expander("Chronische Trainingload über die letzten 30 Tage", ex
         f"geschätzte Durchschnittsintensität: {chronic_estimate['estimated_average_rpe']}"
     )
 
-with st.sidebar.expander("HRV & Herzfrequenz", expanded=True):
-    rmssd = st.number_input("Aktuelle RMSSD", min_value=1, value=45, step=1)
-    baseline_rmssd = st.number_input("Baseline RMSSD", min_value=1, value=50, step=1)
-    resting_hr = st.number_input("Aktueller Ruhepuls", min_value=1, value=52, step=1)
-    baseline_resting_hr = st.number_input("Baseline Ruhepuls", min_value=1, value=50, step=1)
-
-with st.sidebar.expander("Messung & Atmung", expanded=True):
-    st.caption("Der Messkontext beeinflusst HRV, Herzfrequenz und Atemfrequenz. Für diese Version werden nur Ruhe- oder Schlafmessungen verwendet.")
-    measurement_context = st.selectbox("Messkontext", ["rest", "sleep"])
-    respiratory_rate = st.number_input("Atemfrequenz", min_value=1, value=14, step=1)
-
-with st.sidebar.expander("Optional: Blutdruck", expanded=False):
-    use_bp = st.checkbox("Blutdruck einbeziehen")
-    if use_bp:
-        systolic_bp = st.number_input("Systolischer Blutdruck", min_value=1, value=120, step=1)
-        diastolic_bp = st.number_input("Diastolischer Blutdruck", min_value=1, value=76, step=1)
-        baseline_systolic_bp = st.number_input("Baseline systolisch", min_value=1, value=120, step=1)
-        baseline_diastolic_bp = st.number_input("Baseline diastolisch", min_value=1, value=76, step=1)
-    else:
-        systolic_bp = None
-        diastolic_bp = None
-        baseline_systolic_bp = None
-        baseline_diastolic_bp = None
-
-with st.sidebar.expander("Optional: Heart Rate Recovery - 3-Minuten-Test", expanded=False):
-    st.caption(
-        "Standardvorschlag: 3 Minuten kontrolliert harte Belastung (ca. 85-90 % HFmax oder RPE 8/10), "
-        "danach sofort absitzen, nicht sprechen und die Herzfrequenz nach 60 Sekunden erfassen. "
-        "HRR60 = Peak-HF minus HF nach 60 Sekunden."
-    )
-    st.info(
-        "HRR bitte nur vergleichen, wenn Belastungsart, Dauer, Intensität, Tageszeit und Erholungssituation "
-        "möglichst gleich bleiben. Schneller ist nicht immer besser; die App interpretiert HRR im Kontext."
-    )
-    use_hrr = st.checkbox("Standardisierten HRR-Test einbeziehen")
-    if use_hrr:
-        hrr_test_type = st.selectbox(
-            "Testart",
-            ["3-Minuten-Stufentest / kontrolliert hart", "anderer standardisierter Test"],
+if use_short_version:
+    with st.sidebar.expander("Ruhepuls", expanded=True):
+        st.caption(
+            "Kurzversion: Der Ruhepuls wird zusammen mit Trainingload und subjektiven Werten verwendet. "
+            "HRV, HRR, Blutdruck und Atemfrequenz werden neutral behandelt."
         )
-        hr_peak_exercise = st.number_input("Peak-Herzfrequenz am Ende des Tests", min_value=1, value=170, step=1)
-        hr_1min_recovery = st.number_input("Herzfrequenz nach 1 Minute sitzender Erholung", min_value=1, value=140, step=1)
-        hrr_1min = max(0, hr_peak_exercise - hr_1min_recovery)
-        hrr_badness_value = compute_hrr_badness(hrr_1min)
-        st.metric("HRR60", hrr_1min)
-        st.caption(hrr_interpretation_text(hrr_1min))
-    else:
-        hrr_test_type = "kein HRR-Test"
-        hr_peak_exercise = None
-        hr_1min_recovery = None
-        hrr_1min = None
-        hrr_badness_value = 0.0
+        resting_hr = st.number_input("Aktueller Ruhepuls", min_value=1, value=52, step=1)
+        baseline_resting_hr = st.number_input("Baseline Ruhepuls", min_value=1, value=50, step=1)
+
+    # Neutrale Platzhalter, damit das bestehende Modell ohne HRV/HRR/BP/Atmung rechnen kann.
+    rmssd = 50
+    baseline_rmssd = 50
+    measurement_context = "short"
+    respiratory_rate = None
+    systolic_bp = None
+    diastolic_bp = None
+    baseline_systolic_bp = None
+    baseline_diastolic_bp = None
+    use_bp = False
+    hrr_test_type = "nicht erhoben - Kurzversion"
+    hr_peak_exercise = None
+    hr_1min_recovery = None
+    hrr_1min = None
+    hrr_badness_value = 0.0
+else:
+    with st.sidebar.expander("HRV & Herzfrequenz", expanded=True):
+        rmssd = st.number_input("Aktuelle RMSSD", min_value=1, value=45, step=1)
+        baseline_rmssd = st.number_input("Baseline RMSSD", min_value=1, value=50, step=1)
+        resting_hr = st.number_input("Aktueller Ruhepuls", min_value=1, value=52, step=1)
+        baseline_resting_hr = st.number_input("Baseline Ruhepuls", min_value=1, value=50, step=1)
+
+    with st.sidebar.expander("Messung & Atmung", expanded=True):
+        st.caption("Der Messkontext beeinflusst HRV, Herzfrequenz und Atemfrequenz. Für diese Version werden nur Ruhe- oder Schlafmessungen verwendet.")
+        measurement_context = st.selectbox("Messkontext", ["rest", "sleep"])
+        respiratory_rate = st.number_input("Atemfrequenz", min_value=1, value=14, step=1)
+
+    with st.sidebar.expander("Optional: Blutdruck", expanded=False):
+        use_bp = st.checkbox("Blutdruck einbeziehen")
+        if use_bp:
+            systolic_bp = st.number_input("Systolischer Blutdruck", min_value=1, value=120, step=1)
+            diastolic_bp = st.number_input("Diastolischer Blutdruck", min_value=1, value=76, step=1)
+            baseline_systolic_bp = st.number_input("Baseline systolisch", min_value=1, value=120, step=1)
+            baseline_diastolic_bp = st.number_input("Baseline diastolisch", min_value=1, value=76, step=1)
+        else:
+            systolic_bp = None
+            diastolic_bp = None
+            baseline_systolic_bp = None
+            baseline_diastolic_bp = None
+
+    with st.sidebar.expander("Optional: Heart Rate Recovery - 3-Minuten-Test", expanded=False):
+        st.caption(
+            "Standardvorschlag: 3 Minuten kontrolliert harte Belastung (ca. 85-90 % HFmax oder RPE 8/10), "
+            "danach sofort absitzen, nicht sprechen und die Herzfrequenz nach 60 Sekunden erfassen. "
+            "HRR60 = Peak-HF minus HF nach 60 Sekunden."
+        )
+        st.info(
+            "HRR bitte nur vergleichen, wenn Belastungsart, Dauer, Intensität, Tageszeit und Erholungssituation "
+            "möglichst gleich bleiben. Schneller ist nicht immer besser; die App interpretiert HRR im Kontext."
+        )
+        use_hrr = st.checkbox("Standardisierten HRR-Test einbeziehen")
+        if use_hrr:
+            hrr_test_type = st.selectbox(
+                "Testart",
+                ["3-Minuten-Stufentest / kontrolliert hart", "anderer standardisierter Test"],
+            )
+            hr_peak_exercise = st.number_input("Peak-Herzfrequenz am Ende des Tests", min_value=1, value=170, step=1)
+            hr_1min_recovery = st.number_input("Herzfrequenz nach 1 Minute sitzender Erholung", min_value=1, value=140, step=1)
+            hrr_1min = max(0, hr_peak_exercise - hr_1min_recovery)
+            hrr_badness_value = compute_hrr_badness(hrr_1min)
+            st.metric("HRR60", hrr_1min)
+            st.caption(hrr_interpretation_text(hrr_1min))
+        else:
+            hrr_test_type = "kein HRR-Test"
+            hr_peak_exercise = None
+            hr_1min_recovery = None
+            hrr_1min = None
+            hrr_badness_value = 0.0
 
 with st.sidebar.expander("Subjektive Faktoren", expanded=True):
     st.caption("Bei Belastungsfaktoren gilt: 1 = kein Problem, 10 = stark ausgeprägt.")
@@ -1209,7 +1386,33 @@ if "measurements" not in st.session_state:
     st.session_state.measurements = load_history().to_dict("records")
 
 history_df = pd.DataFrame(st.session_state.measurements)
-hrv_trend = compute_hrv_trend(history_df, rmssd, resting_hr, user_id.strip())
+if use_short_version:
+    hrv_trend = {
+        "valid_measurements": 0,
+        "ln_rmssd_current": None,
+        "ln_rmssd_rolling": None,
+        "ln_rmssd_baseline": None,
+        "swc": None,
+        "trend_delta": None,
+        "status": "nicht erhoben - Kurzversion",
+        "badness": 0.0,
+        "weekly_mean_current": None,
+        "weekly_mean_previous": None,
+        "weekly_mean_delta": None,
+        "lnrmssd_sd_7": None,
+        "lnrmssd_cv_7": None,
+        "cv_badness": 0.0,
+        "rr_interval_current": rr_interval_ms(resting_hr),
+        "lnrmssd_rr_ratio_current": None,
+        "lnrmssd_rr_ratio_rolling": None,
+        "saturation_score": 0.0,
+        "freshness_score": 0.0,
+        "hrv_outlier_score": 0.0,
+        "measurement_warning": "",
+        "explanation": "Kurzversion: HRV wurde nicht erhoben und wird nicht in die Analyse einbezogen.",
+    }
+else:
+    hrv_trend = compute_hrv_trend(history_df, rmssd, resting_hr, user_id.strip())
 
 data = UserInputV4(
     acute_load=acute_load,
@@ -1230,6 +1433,7 @@ data = UserInputV4(
     illness=illness,
     sleep_quality=sleep_quality,
     mood=mood,
+    analysis_mode=analysis_mode,
     hrv_trend_status=hrv_trend["status"],
     hrv_trend_badness=hrv_trend["badness"],
     hrv_valid_measurements=hrv_trend["valid_measurements"],
@@ -1257,6 +1461,7 @@ if st.sidebar.button("Aktuelle Messung speichern"):
         new_measurement = {
             "Zeitpunkt": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "User-ID": user_id.strip(),
+            "Analysemodus": analysis_mode,
             "Messkontext": measurement_context,
             "Trainingsart": training_type,
             "Dauer Minuten": duration_min,
@@ -1270,12 +1475,12 @@ if st.sidebar.button("Aktuelle Messung speichern"):
             "30 Tage Krafttrainings/Woche": strength_sessions_per_week,
             "30 Tage Krafttyp": chronic_strength_type,
             "Geschätzter Wochenload": chronic_estimate["weekly_load"],
-            "RMSSD": rmssd,
-            "LnRMSSD": round(ln_rmssd(rmssd), 4),
-            "Baseline RMSSD": baseline_rmssd,
+            "RMSSD": None if use_short_version else rmssd,
+            "LnRMSSD": None if use_short_version else round(ln_rmssd(rmssd), 4),
+            "Baseline RMSSD": None if use_short_version else baseline_rmssd,
             "Ruhepuls": resting_hr,
             "Baseline Ruhepuls": baseline_resting_hr,
-            "Atemfrequenz": respiratory_rate,
+            "Atemfrequenz": None if use_short_version else respiratory_rate,
             "HRR Testart": hrr_test_type,
             "HRR 1 Minute": hrr_1min,
             "HRR Badness": hrr_badness_value,
@@ -1341,27 +1546,32 @@ st.write("**Treiber:**")
 for driver in result["drivers"]:
     st.write(f"- {driver}")
 
-st.divider()
-st.subheader("HRV-Trend nach LnRMSSD")
-trend_col1, trend_col2, trend_col3, trend_col4 = st.columns(4)
-trend_col1.metric("Gültige Messungen", hrv_trend["valid_measurements"])
-trend_col2.metric("Trendstatus", hrv_trend["status"])
-trend_col3.metric("7-Messpunkt-LnRMSSD", "-" if hrv_trend["ln_rmssd_rolling"] is None else round(hrv_trend["ln_rmssd_rolling"], 3))
-trend_col4.metric("Individuelle Schwelle (SWC)", "-" if hrv_trend["swc"] is None else round(hrv_trend["swc"], 3))
-st.caption(hrv_trend["explanation"])
+if not use_short_version:
+    st.divider()
+    st.subheader("HRV-Trend nach LnRMSSD")
+    trend_col1, trend_col2, trend_col3, trend_col4 = st.columns(4)
+    trend_col1.metric("Gültige Messungen", hrv_trend["valid_measurements"])
+    trend_col2.metric("Trendstatus", hrv_trend["status"])
+    trend_col3.metric("7-Messpunkt-LnRMSSD", "-" if hrv_trend["ln_rmssd_rolling"] is None else round(hrv_trend["ln_rmssd_rolling"], 3))
+    trend_col4.metric("Individuelle Schwelle (SWC)", "-" if hrv_trend["swc"] is None else round(hrv_trend["swc"], 3))
+    st.caption(hrv_trend["explanation"])
 
-trend_col5, trend_col6, trend_col7, trend_col8 = st.columns(4)
-trend_col5.metric("LnRMSSD CV 7", "-" if hrv_trend["lnrmssd_cv_7"] is None else f"{round(hrv_trend['lnrmssd_cv_7'], 2)} %")
-trend_col6.metric("HRV Instabilität", round(hrv_trend["cv_badness"], 1))
-trend_col7.metric("HRV Saturation", round(hrv_trend["saturation_score"], 1))
-trend_col8.metric("Freshness Score", round(hrv_trend["freshness_score"], 1))
+    trend_col5, trend_col6, trend_col7, trend_col8 = st.columns(4)
+    trend_col5.metric("LnRMSSD CV 7", "-" if hrv_trend["lnrmssd_cv_7"] is None else f"{round(hrv_trend['lnrmssd_cv_7'], 2)} %")
+    trend_col6.metric("HRV Instabilität", round(hrv_trend["cv_badness"], 1))
+    trend_col7.metric("HRV Saturation", round(hrv_trend["saturation_score"], 1))
+    trend_col8.metric("Freshness Score", round(hrv_trend["freshness_score"], 1))
 
-if hrv_trend["weekly_mean_current"] is not None:
-    st.caption(
-        f"Wochenmittel aktuell: {round(hrv_trend['weekly_mean_current'], 3)} | "
-        f"Vorwoche: {round(hrv_trend['weekly_mean_previous'], 3)} | "
-        f"Delta: {round(hrv_trend['weekly_mean_delta'], 3)}"
-    )
+    if hrv_trend["weekly_mean_current"] is not None:
+        st.caption(
+            f"Wochenmittel aktuell: {round(hrv_trend['weekly_mean_current'], 3)} | "
+            f"Vorwoche: {round(hrv_trend['weekly_mean_previous'], 3)} | "
+            f"Delta: {round(hrv_trend['weekly_mean_delta'], 3)}"
+        )
+
+else:
+    st.divider()
+    st.info("Kurzversion: HRV, Atemfrequenz, Blutdruck und Heart Rate Recovery wurden nicht erhoben und werden nicht in die Analyse einbezogen.")
 
 compensation_value = result["subscores"].get("Kompensationsbelastung", 0)
 if compensation_value >= 50:
@@ -1370,16 +1580,16 @@ if compensation_value >= 50:
         "treten zusammen mit Load/Müdigkeit/Muskelschmerzen oder schlechtem Schlaf auf."
     )
 
-if hrv_trend["measurement_warning"]:
+if (not use_short_version) and hrv_trend["measurement_warning"]:
     st.warning(hrv_trend["measurement_warning"])
 
-if hrv_trend["cv_badness"] >= 45:
+if (not use_short_version) and hrv_trend["cv_badness"] >= 45:
     st.warning("HRV-Stabilität auffällig: Die LnRMSSD-Werte schwanken über die letzten Messungen stärker als üblich. Das kann echte Belastung oder auch Messvariabilität bedeuten.")
 
-if hrv_trend["saturation_score"] >= 40:
+if (not use_short_version) and hrv_trend["saturation_score"] >= 40:
     st.info("Mögliche HRV-Saturation nach Plews: Tiefer Ruhepuls/R-R-Kontext verändert die Interpretation einer tieferen HRV.")
 
-if hrr_badness_value >= 45:
+if (not use_short_version) and hrr_badness_value >= 45:
     st.warning(
         "Heart Rate Recovery verlangsamt oder auffällig. Bitte nur interpretieren, wenn der 3-Minuten-Test "
         "standardisiert durchgeführt wurde. Bei sehr tiefer HRR (z.B. <=12 bpm) Test wiederholen; zusammen mit "
@@ -1400,7 +1610,16 @@ st.pyplot(fig)
 
 st.divider()
 st.subheader("Subscores")
-sub_df = pd.DataFrame(list(result["subscores"].items()), columns=["Subscore", "Wert"])
+subscores_to_show = result["subscores"].copy()
+if use_short_version:
+    for key in [
+        "HRV Score", "Ungewöhnliche Atemfrequenz", "Kreislaufregulation",
+        "LnRMSSD Trendbelastung", "HRV Instabilität", "HRV Saturation",
+        "Freshness Score", "HRV Ausreisser / Messwarnung",
+        "Heart Rate Recovery Badness", "Kompensationsbelastung"
+    ]:
+        subscores_to_show.pop(key, None)
+sub_df = pd.DataFrame(list(subscores_to_show.items()), columns=["Subscore", "Wert"])
 st.dataframe(sub_df, use_container_width=True)
 
 st.divider()
