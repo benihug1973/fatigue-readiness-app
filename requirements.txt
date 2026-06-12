@@ -4,3 +4,4 @@ matplotlib
 reportlab
 gspread
 google-auth
+fpdf2
