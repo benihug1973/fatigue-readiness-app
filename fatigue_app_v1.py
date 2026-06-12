@@ -1664,18 +1664,89 @@ else:
     if "LnRMSSD" in display_history_df.columns and len(display_history_df) >= 2:
         st.subheader("LnRMSSD-Verlauf")
         ln_df = display_history_df.copy()
-        ln_df["Zeitpunkt"] = pd.to_datetime(ln_df["Zeitpunkt"])
-        ln_df = ln_df.set_index("Zeitpunkt")
-        fig2, ax2 = plt.subplots(figsize=(10, 4))
-        ax2.plot(ln_df.index, ln_df["LnRMSSD"], marker="o", label="LnRMSSD")
-        if len(ln_df) >= 3:
-            rolling = ln_df["LnRMSSD"].rolling(window=min(7, len(ln_df)), min_periods=3).mean()
-            ax2.plot(ln_df.index, rolling, marker="o", label="Rolling Average")
-        ax2.set_ylabel("LnRMSSD")
-        ax2.set_title("LnRMSSD-Verlauf")
-        ax2.legend()
-        plt.xticks(rotation=30, ha="right")
-        st.pyplot(fig2)
+        ln_df["LnRMSSD"] = pd.to_numeric(ln_df["LnRMSSD"], errors="coerce")
+        ln_df = ln_df.dropna(subset=["LnRMSSD"]).reset_index(drop=True)
+
+        if len(ln_df) >= 2:
+            # Wichtig für Testmessungen: mehrere Eingaben können denselben Zeitstempel haben.
+            # Deshalb wird die x-Achse hier bewusst als Messnummer dargestellt und nicht als Uhrzeit.
+            x_values = range(1, len(ln_df) + 1)
+
+            fig2, ax2 = plt.subplots(figsize=(10, 5))
+
+            # Einzelwerte
+            ax2.plot(
+                x_values,
+                ln_df["LnRMSSD"],
+                marker="o",
+                label="LnRMSSD"
+            )
+
+            # 7-Messpunkt Rolling Average
+            rolling_avg = ln_df["LnRMSSD"].rolling(
+                window=min(7, len(ln_df)),
+                min_periods=3
+            ).mean()
+
+            if len(ln_df) >= 3:
+                ax2.plot(
+                    x_values,
+                    rolling_avg,
+                    marker="o",
+                    linewidth=2,
+                    label="Rolling Average"
+                )
+
+            # SWC = Smallest Worthwhile Change / individuelle Veränderungsschwelle
+            # Sichtbar ab mindestens 5 Messungen. Eine minimale Bandbreite verhindert,
+            # dass die Linien bei sehr kleinen Schwankungen unsichtbar werden.
+            if len(ln_df) >= 5:
+                rolling_sd = ln_df["LnRMSSD"].rolling(
+                    window=min(7, len(ln_df)),
+                    min_periods=3
+                ).std()
+
+                swc = (0.5 * rolling_sd).clip(lower=0.05)
+                upper_swc = rolling_avg + swc
+                lower_swc = rolling_avg - swc
+
+                ax2.plot(
+                    x_values,
+                    upper_swc,
+                    linestyle="--",
+                    linewidth=1.5,
+                    label="SWC obere Grenze"
+                )
+                ax2.plot(
+                    x_values,
+                    lower_swc,
+                    linestyle="--",
+                    linewidth=1.5,
+                    label="SWC untere Grenze"
+                )
+                ax2.fill_between(
+                    list(x_values),
+                    lower_swc.to_numpy(dtype=float),
+                    upper_swc.to_numpy(dtype=float),
+                    alpha=0.15,
+                    label="SWC-Bereich"
+                )
+
+            ax2.set_xlabel("Messnummer")
+            ax2.set_ylabel("LnRMSSD")
+            ax2.set_title("LnRMSSD-Verlauf mit individueller Veränderungsschwelle")
+            ax2.legend()
+            ax2.grid(True, alpha=0.25)
+            st.pyplot(fig2)
+
+            st.caption(
+                "Die x-Achse zeigt die Messnummer, nicht die Uhrzeit. So bleiben Testmessungen sichtbar, "
+                "auch wenn mehrere Werte kurz hintereinander gespeichert werden. Die gestrichelten SWC-Grenzen "
+                "zeigen die individuelle Veränderungsschwelle. Werte ausserhalb dieses Bereichs sollten im Kontext "
+                "von Training, Schlaf, Krankheitssymptomen und Messqualität interpretiert werden."
+            )
+        else:
+            st.info("Für den LnRMSSD-Verlauf braucht es mindestens 2 gültige LnRMSSD-Werte.")
 
 st.divider()
 st.caption(
