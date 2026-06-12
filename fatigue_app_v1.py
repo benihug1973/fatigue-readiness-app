@@ -6,6 +6,7 @@ from typing import Optional
 from datetime import datetime
 import math
 import os
+import io
 
 
 # =============================
@@ -1148,12 +1149,228 @@ class FatigueProfilerV4:
         }
 
 
+
+# =============================
+# REPORT- UND GRAFIK-HILFEN
+# =============================
+
+def add_measurement_axis(df: pd.DataFrame) -> pd.DataFrame:
+    """Ergaenzt Messnummer und kurze Achsenlabels mit Datum/Uhrzeit."""
+    out = df.copy().reset_index(drop=True)
+    out["Messnummer"] = range(1, len(out) + 1)
+
+    if "Zeitpunkt" in out.columns:
+        parsed_time = pd.to_datetime(out["Zeitpunkt"], errors="coerce")
+    else:
+        parsed_time = pd.Series([pd.NaT] * len(out))
+
+    labels = []
+    for i, dt in enumerate(parsed_time):
+        if pd.isna(dt):
+            labels.append(f"{i + 1}")
+        else:
+            labels.append(f"{i + 1}\n{dt.strftime('%d.%m.%y')}\n{dt.strftime('%H:%M')}")
+    out["Messlabel"] = labels
+    return out
+
+
+def plot_measurement_history_by_number(df: pd.DataFrame, chart_cols: list[str]):
+    """Plot fuer Verlauf der Messungen mit Messnummer statt Zeitachse."""
+    plot_df = add_measurement_axis(df)
+    numeric_cols = []
+    for col in chart_cols:
+        if col in plot_df.columns:
+            plot_df[col] = pd.to_numeric(plot_df[col], errors="coerce")
+            if plot_df[col].notna().any():
+                numeric_cols.append(col)
+
+    if not numeric_cols or len(plot_df) < 2:
+        return None
+
+    fig, ax = plt.subplots(figsize=(11, 5.5))
+    x = plot_df["Messnummer"].tolist()
+    for col in numeric_cols:
+        ax.plot(x, plot_df[col], marker="o", linewidth=1.8, label=col)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(plot_df["Messlabel"].tolist(), fontsize=8)
+    ax.set_xlabel("Messnummer / Datum / Uhrzeit")
+    ax.set_ylabel("Wert")
+    ax.set_title("Verlauf der Messungen")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def build_7_day_report_pdf(df: pd.DataFrame, selected_user: str, mode: str = "Letzte 7 Kalendertage") -> bytes:
+    """Erstellt einen einfachen 7-Tage-Rapport als PDF ohne Zusatzpakete."""
+    from matplotlib.backends.backend_pdf import PdfPages
+    from textwrap import wrap
+
+    report_df = df.copy()
+    if report_df.empty:
+        report_df = pd.DataFrame()
+
+    if "Zeitpunkt" in report_df.columns:
+        report_df["_Zeitpunkt_dt"] = pd.to_datetime(report_df["Zeitpunkt"], errors="coerce")
+        report_df = report_df.sort_values("_Zeitpunkt_dt", na_position="last")
+    else:
+        report_df["_Zeitpunkt_dt"] = pd.NaT
+
+    if mode == "Letzte 7 Kalendertage" and report_df["_Zeitpunkt_dt"].notna().any():
+        end_dt = report_df["_Zeitpunkt_dt"].max()
+        start_dt = end_dt - pd.Timedelta(days=7)
+        week_df = report_df[report_df["_Zeitpunkt_dt"] >= start_dt].copy()
+        if week_df.empty:
+            week_df = report_df.tail(7).copy()
+    else:
+        week_df = report_df.tail(7).copy()
+
+    def num_col(col):
+        if col in week_df.columns:
+            return pd.to_numeric(week_df[col], errors="coerce")
+        return pd.Series(dtype=float)
+
+    def mean_text(col):
+        values = num_col(col).dropna()
+        return "-" if values.empty else f"{values.mean():.1f}"
+
+    def min_text(col):
+        values = num_col(col).dropna()
+        return "-" if values.empty else f"{values.min():.1f}"
+
+    def max_text(col):
+        values = num_col(col).dropna()
+        return "-" if values.empty else f"{values.max():.1f}"
+
+    primary_profile = "-"
+    if "Primaeres Profil" in week_df.columns and not week_df["Primaeres Profil"].dropna().empty:
+        primary_profile = week_df["Primaeres Profil"].mode().iloc[0]
+    elif "Primäres Profil" in week_df.columns and not week_df["Primäres Profil"].dropna().empty:
+        primary_profile = week_df["Primäres Profil"].mode().iloc[0]
+
+    lines = []
+    lines.append("Readiness-App: 7-Tage-Rapport")
+    lines.append(f"User: {selected_user}")
+    lines.append(f"Auswertung: {mode}")
+    lines.append(f"Anzahl Messungen im Rapport: {len(week_df)}")
+    if week_df["_Zeitpunkt_dt"].notna().any():
+        lines.append(f"Zeitraum: {week_df['_Zeitpunkt_dt'].min().strftime('%d.%m.%Y %H:%M')} bis {week_df['_Zeitpunkt_dt'].max().strftime('%d.%m.%Y %H:%M')}")
+    lines.append("")
+    lines.append("Kernwerte")
+    lines.append(f"- Training Readiness: Mittel {mean_text('Training Readiness')} | Minimum {min_text('Training Readiness')} | Maximum {max_text('Training Readiness')}")
+    lines.append(f"- Work Readiness: Mittel {mean_text('Work Readiness')} | Minimum {min_text('Work Readiness')} | Maximum {max_text('Work Readiness')}")
+    lines.append(f"- Haeufigstes primaeres Profil: {primary_profile}")
+    lines.append(f"- RMSSD: Mittel {mean_text('RMSSD')} | Ruhepuls: Mittel {mean_text('Ruhepuls')}")
+    lines.append(f"- Schlafqualitaet: Mittel {mean_text('Schlafqualität')} | Mentaler Stress: Mittel {mean_text('Mentaler Stress')}")
+    lines.append("")
+    lines.append("Werte, die Beachtung verdienen")
+
+    alerts = []
+    def add_alert(condition, text):
+        if condition:
+            alerts.append(text)
+
+    add_alert((num_col("Training Readiness") < 50).any(), "Training Readiness war mindestens einmal unter 50: Belastung oder Erholung genauer pruefen.")
+    add_alert((num_col("Work Readiness") < 50).any(), "Work Readiness war mindestens einmal unter 50: mentale/allgemeine Belastbarkeit beachten.")
+    add_alert((num_col("Erholungsindex") < 50).any(), "Erholungsindex war tief: Erholung, Schlaf und Load-Verlauf pruefen.")
+    add_alert((num_col("Zentrale Erschöpfung") >= 70).any(), "Zentrale Erschoepfung war hoch: Nervensystem/Stress/Schlaf priorisieren.")
+    add_alert((num_col("Muskuläre Ermüdung") >= 70).any(), "Muskulaere Ermuedung war hoch: keine harten muskulären Einheiten in dieser Phase.")
+    add_alert((num_col("Kreislaufregulation") >= 70).any(), "Kreislaufregulation war auffaellig: HRR, Blutdruck, Ruhepuls oder Atmung kontrollieren.")
+    add_alert((num_col("Krankheitssymptome") > 6).any(), "Krankheitssymptome >6: Training pausieren bis Symptome deutlich sinken.")
+    add_alert(((num_col("Krankheitssymptome") >= 3) & (num_col("Krankheitssymptome") <= 6)).any(), "Krankheitssymptome 3-6: nur lockere Belastung, keine Intensitaet.")
+    add_alert((num_col("Kompensationsbelastung") >= 50).any(), "Kompensationsbelastung auffaellig: hohe HRV nicht automatisch als gute Erholung interpretieren.")
+    add_alert((num_col("HRV CV Badness") >= 45).any(), "HRV-Stabilitaet auffaellig: staerkere Tag-zu-Tag-Schwankungen beobachten.")
+    add_alert((num_col("HRV Outlier Score") >= 55).any(), "HRV-Ausreisser vorhanden: moeglicher Messfehler oder aussergewoehnliche Belastung; Messung standardisiert wiederholen.")
+    add_alert((num_col("HRR Badness") >= 45).any(), "Heart Rate Recovery auffaellig: HRR-Test standardisiert wiederholen und Kreislaufwerte beachten.")
+    add_alert((num_col("ACWR") >= 1.5).any(), "ACWR deutlich erhoeht: akute Belastung ueber dem gewohnten Niveau.")
+    add_alert((num_col("Schlafqualität") <= 4).any(), "Schlafqualitaet war tief: Erholungssteuerung besonders beachten.")
+    add_alert((num_col("Mentaler Stress") >= 7).any(), "Mentaler Stress war hoch: Intensitaet reduzieren, Regeneration und Alltagstress beachten.")
+
+    if not alerts:
+        alerts.append("Keine klaren Warnwerte im 7-Tage-Zeitraum erkannt.")
+
+    for alert in alerts:
+        lines.append(f"- {alert}")
+
+    lines.append("")
+    lines.append("Empfehlung fuer die naechste Woche")
+    if (num_col("Krankheitssymptome") > 6).any():
+        lines.append("- Fokus auf Erholung. Kein Training bis Krankheitssymptome deutlich gesunken sind.")
+    elif (num_col("Training Readiness") < 50).any() or (num_col("Erholungsindex") < 50).any():
+        lines.append("- Trainingsumfang und Intensitaet vorsichtig planen. Geeignet: Grundlagenausdauer, Technik, Mobility. Keine langen erschöpfenden Einheiten.")
+    elif (num_col("Muskuläre Ermüdung") >= 70).any():
+        lines.append("- Muskuläre Belastung reduzieren. Alternative Muskelgruppen, Technik oder lockere Grundlagenausdauer bevorzugen.")
+    else:
+        lines.append("- Weiter regelmaessig messen. Bei stabilen Werten kann das Training gemaess Plan fortgesetzt werden.")
+
+    lines.append("")
+    lines.append("Hinweis: Der Rapport ist ein Monitoring-Werkzeug und ersetzt keine medizinische Diagnostik.")
+
+    buffer = io.BytesIO()
+    with PdfPages(buffer) as pdf:
+        fig = plt.figure(figsize=(8.27, 11.69))
+        fig.patch.set_facecolor("white")
+        ax = fig.add_axes([0.06, 0.05, 0.88, 0.90])
+        ax.axis("off")
+
+        y = 0.98
+        for idx, line in enumerate(lines):
+            if idx == 0:
+                ax.text(0.0, y, line, fontsize=16, fontweight="bold", va="top")
+                y -= 0.045
+                continue
+            if line in ["Kernwerte", "Werte, die Beachtung verdienen", "Empfehlung fuer die naechste Woche"]:
+                y -= 0.012
+                ax.text(0.0, y, line, fontsize=12, fontweight="bold", va="top")
+                y -= 0.032
+                continue
+            wrapped = wrap(line, width=95) if line else [""]
+            for part in wrapped:
+                ax.text(0.0, y, part, fontsize=9.5, va="top")
+                y -= 0.023
+                if y < 0.06:
+                    pdf.savefig(fig, bbox_inches="tight")
+                    plt.close(fig)
+                    fig = plt.figure(figsize=(8.27, 11.69))
+                    fig.patch.set_facecolor("white")
+                    ax = fig.add_axes([0.06, 0.05, 0.88, 0.90])
+                    ax.axis("off")
+                    y = 0.98
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+
+        # Zweite Seite: kompakte Trendgrafik, falls moeglich.
+        trend_cols = [c for c in ["Training Readiness", "Work Readiness", "Erholungsindex", "Krankheitssymptome", "Schlafqualität", "Mentaler Stress"] if c in week_df.columns]
+        if len(week_df) >= 2 and trend_cols:
+            plot_df = add_measurement_axis(week_df)
+            fig2, ax2 = plt.subplots(figsize=(10, 5.5))
+            x = plot_df["Messnummer"].tolist()
+            for col in trend_cols:
+                values = pd.to_numeric(plot_df[col], errors="coerce")
+                if values.notna().any():
+                    ax2.plot(x, values, marker="o", label=col)
+            ax2.set_title("7-Tage-Verlauf wichtiger Werte")
+            ax2.set_xlabel("Messnummer / Datum / Uhrzeit")
+            ax2.set_ylabel("Wert")
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(plot_df["Messlabel"].tolist(), fontsize=8)
+            ax2.grid(True, alpha=0.25)
+            ax2.legend(fontsize=8)
+            fig2.tight_layout()
+            pdf.savefig(fig2, bbox_inches="tight")
+            plt.close(fig2)
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
 # =============================
 # STREAMLIT UI
 # =============================
 
-st.set_page_config(page_title="Readiness-App V10", page_icon="🏃", layout="wide")
-st.title("🏃 Readiness-App V10")
+st.set_page_config(page_title="Readiness-App V11", page_icon="🏃", layout="wide")
+st.title("🏃 Readiness-App V11")
 st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Session-RPE-Load, Kurz-/Vollversion und Google-Sheet-Speicherung")
 
 if google_sheets_configured():
@@ -1195,13 +1412,13 @@ st.sidebar.divider()
 st.sidebar.subheader("📘 Nutzerleitfaden")
 
 try:
-    with open("Readyness_App_Nutzerleitfaden.pdf", "rb") as pdf_file:
+    with open("Readiness_App_Nutzerleitfaden.pdf", "rb") as pdf_file:
         PDFbyte = pdf_file.read()
 
     st.sidebar.download_button(
         label="📥 Nutzerleitfaden öffnen / herunterladen",
         data=PDFbyte,
-        file_name="Readyness_App_Nutzerleitfaden.pdf",
+        file_name="Readiness_App_Nutzerleitfaden.pdf",
         mime="application/pdf"
     )
 
@@ -1654,12 +1871,30 @@ else:
     existing_chart_cols = [c for c in chart_cols if c in display_history_df.columns]
 
     if existing_chart_cols and len(display_history_df) >= 2:
-        chart_df = display_history_df.copy()
-        chart_df["Zeitpunkt"] = pd.to_datetime(chart_df["Zeitpunkt"])
-        chart_df = chart_df.set_index("Zeitpunkt")
-        st.line_chart(chart_df[existing_chart_cols])
+        fig_history = plot_measurement_history_by_number(display_history_df, existing_chart_cols)
+        if fig_history is not None:
+            st.pyplot(fig_history)
+            st.caption(
+                "Die x-Achse zeigt Messnummer, Datum und Uhrzeit. So bleiben mehrere Testmessungen am gleichen Tag sauber lesbar."
+            )
+        else:
+            st.info("Für Trenddiagramme braucht es mindestens 2 gespeicherte Messungen pro User.")
     else:
         st.info("Für Trenddiagramme braucht es mindestens 2 gespeicherte Messungen pro User.")
+
+    st.subheader("7-Tage-Rapport")
+    report_mode = st.radio(
+        "Umfang des Rapports",
+        ["Letzte 7 Kalendertage", "Letzte 7 Messungen"],
+        horizontal=True,
+    )
+    report_pdf = build_7_day_report_pdf(display_history_df, selected_user, report_mode)
+    st.download_button(
+        "📄 7-Tage-Rapport als PDF herunterladen",
+        data=report_pdf,
+        file_name=f"{selected_user}_7_tage_readiness_rapport.pdf",
+        mime="application/pdf",
+    )
 
     if "LnRMSSD" in display_history_df.columns and len(display_history_df) >= 2:
         st.subheader("LnRMSSD-Verlauf")
@@ -1669,10 +1904,11 @@ else:
 
         if len(ln_df) >= 2:
             # Wichtig für Testmessungen: mehrere Eingaben können denselben Zeitstempel haben.
-            # Deshalb wird die x-Achse hier bewusst als Messnummer dargestellt und nicht als Uhrzeit.
-            x_values = range(1, len(ln_df) + 1)
+            # Deshalb wird die x-Achse hier bewusst als Messnummer dargestellt und mit Datum/Uhrzeit ergaenzt.
+            ln_df = add_measurement_axis(ln_df)
+            x_values = list(ln_df["Messnummer"])
 
-            fig2, ax2 = plt.subplots(figsize=(10, 5))
+            fig2, ax2 = plt.subplots(figsize=(10, 5.5))
 
             # Einzelwerte
             ax2.plot(
@@ -1732,15 +1968,18 @@ else:
                     label="SWC-Bereich"
                 )
 
-            ax2.set_xlabel("Messnummer")
+            ax2.set_xticks(x_values)
+            ax2.set_xticklabels(ln_df["Messlabel"].tolist(), fontsize=8)
+            ax2.set_xlabel("Messnummer / Datum / Uhrzeit")
             ax2.set_ylabel("LnRMSSD")
             ax2.set_title("LnRMSSD-Verlauf mit individueller Veränderungsschwelle")
             ax2.legend()
             ax2.grid(True, alpha=0.25)
+            fig2.tight_layout()
             st.pyplot(fig2)
 
             st.caption(
-                "Die x-Achse zeigt die Messnummer, nicht die Uhrzeit. So bleiben Testmessungen sichtbar, "
+                "Die x-Achse zeigt Messnummer, Datum und Uhrzeit. So bleiben Testmessungen sichtbar, "
                 "auch wenn mehrere Werte kurz hintereinander gespeichert werden. Die gestrichelten SWC-Grenzen "
                 "zeigen die individuelle Veränderungsschwelle. Werte ausserhalb dieses Bereichs sollten im Kontext "
                 "von Training, Schlaf, Krankheitssymptomen und Messqualität interpretiert werden."
