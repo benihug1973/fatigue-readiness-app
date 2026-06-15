@@ -1412,13 +1412,13 @@ st.sidebar.divider()
 st.sidebar.subheader("📘 Nutzerleitfaden")
 
 try:
-    with open("Readiness_App_Nutzerleitfaden.pdf", "rb") as pdf_file:
+    with open("Readyness_App_Nutzerleitfaden.pdf", "rb") as pdf_file:
         PDFbyte = pdf_file.read()
 
     st.sidebar.download_button(
         label="📥 Nutzerleitfaden öffnen / herunterladen",
         data=PDFbyte,
-        file_name="Readiness_App_Nutzerleitfaden.pdf",
+        file_name="Readyness_App_Nutzerleitfaden.pdf",
         mime="application/pdf"
     )
 
