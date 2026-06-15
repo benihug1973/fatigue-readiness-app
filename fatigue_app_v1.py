@@ -200,6 +200,23 @@ def rr_interval_ms(heart_rate_bpm: float) -> float:
     return 60000 / max(float(heart_rate_bpm), 1.0)
 
 
+def safe_round(value, ndigits=1):
+    """Rundet nur echte Zahlen. None/NaN/leere Werte bleiben None.
+
+    Wichtig fuer die Kurzversion: Dort werden HRV/HRR/BP-Felder bewusst
+    nicht erhoben. Beim Speichern duerfen diese None-Werte nicht mit
+    round(None, ...) verarbeitet werden.
+    """
+    try:
+        if value is None:
+            return None
+        if pd.isna(value):
+            return None
+        return round(float(value), ndigits)
+    except Exception:
+        return None
+
+
 def compute_hrr_badness(hrr_1min: Optional[float]) -> float:
     """Pragmatische Basisbewertung von HRR60.
 
@@ -1428,44 +1445,94 @@ except FileNotFoundError:
         "Bitte prüfen ob die PDF-Datei in GitHub hochgeladen wurde."
     )
 with st.sidebar.expander("Trainingsbelastung - Session RPE", expanded=True):
-    st.caption("Akuter Load = Dauer in Minuten × Intensität 1-10 × Trainingsart-Faktor.")
-
-    training_type = st.selectbox(
-        "Trainingsart",
-        ["Ausdauer", "Kraft", "HIIT", "Wettkampf", "Recovery Training"],
+    st.caption(
+        "Akuter Tages-Load = Summe aller heutigen Einheiten. "
+        "Pro Einheit: Dauer in Minuten × Intensität 1-10 × Trainingsart-Faktor."
     )
 
-    duration_min = st.number_input(
-        "Dauer der Einheit (Minuten)",
-        min_value=0,
-        value=60,
-        step=5,
-    )
-
-    intensity_rpe = st.slider(
-        "Intensität / Session RPE",
+    number_of_trainings = st.number_input(
+        "Anzahl Trainingseinheiten heute",
         min_value=1,
-        max_value=10,
-        value=5,
-        help="1 = sehr leicht, 10 = maximal anstrengend",
+        max_value=4,
+        value=1,
+        step=1,
+        help="Bis zu vier Einheiten pro Tag können erfasst und kumuliert werden.",
     )
 
-    if training_type == "Kraft":
-        strength_type = st.selectbox(
-            "Krafttraining-Typ",
-            ["Hypertrophie", "Maximalkraft", "Kraftausdauer"],
+    training_sessions = []
+    acute_load = 0.0
+
+    for session_idx in range(1, int(number_of_trainings) + 1):
+        st.markdown(f"**Training {session_idx}**")
+
+        training_type_i = st.selectbox(
+            f"Trainingsart {session_idx}",
+            ["Ausdauer", "Kraft", "HIIT", "Wettkampf", "Recovery Training"],
+            key=f"training_type_{session_idx}",
         )
-    else:
-        strength_type = "keine Kraftangabe"
 
-    acute_load = calculate_session_rpe_load(
-        duration_min=duration_min,
-        intensity_rpe=intensity_rpe,
-        training_type=training_type,
-        strength_type=strength_type,
+        duration_min_i = st.number_input(
+            f"Dauer Training {session_idx} (Minuten)",
+            min_value=0,
+            value=60 if session_idx == 1 else 0,
+            step=5,
+            key=f"duration_min_{session_idx}",
+        )
+
+        intensity_rpe_i = st.slider(
+            f"Intensität / Session RPE Training {session_idx}",
+            min_value=1,
+            max_value=10,
+            value=5,
+            help="1 = sehr leicht, 10 = maximal anstrengend",
+            key=f"intensity_rpe_{session_idx}",
+        )
+
+        if training_type_i == "Kraft":
+            strength_type_i = st.selectbox(
+                f"Krafttraining-Typ {session_idx}",
+                ["Hypertrophie", "Maximalkraft", "Kraftausdauer"],
+                key=f"strength_type_{session_idx}",
+            )
+        else:
+            strength_type_i = "keine Kraftangabe"
+
+        session_load_i = calculate_session_rpe_load(
+            duration_min=duration_min_i,
+            intensity_rpe=intensity_rpe_i,
+            training_type=training_type_i,
+            strength_type=strength_type_i,
+        )
+
+        training_sessions.append({
+            "nr": session_idx,
+            "type": training_type_i,
+            "duration": int(duration_min_i),
+            "rpe": int(intensity_rpe_i),
+            "strength_type": strength_type_i,
+            "load": float(session_load_i),
+        })
+        acute_load += float(session_load_i)
+        st.caption(f"Load Training {session_idx}: {session_load_i}")
+
+    acute_load = round(acute_load, 1)
+
+    # Kompatibilitaet mit bestehenden Speicherfeldern: erste Einheit separat halten.
+    first_session = training_sessions[0]
+    training_type = first_session["type"]
+    duration_min = first_session["duration"]
+    intensity_rpe = first_session["rpe"]
+    strength_type = first_session["strength_type"]
+
+    training_details_text = "; ".join(
+        [
+            f"{s['nr']}: {s['type']}, {s['duration']} min, RPE {s['rpe']}, {s['strength_type']}, Load {s['load']}"
+            for s in training_sessions
+        ]
     )
 
-    st.metric("Berechneter akuter Trainingload", acute_load)
+    st.metric("Akuter Tages-Load gesamt", acute_load)
+    st.caption("Einzeln: " + training_details_text)
 
 with st.sidebar.expander("Chronische Trainingload über die letzten 30 Tage", expanded=True):
     st.caption("Für die Testversion wird der chronische Load aus deinem typischen Training der letzten 30 Tage geschätzt.")
@@ -1680,20 +1747,42 @@ if st.sidebar.button("Aktuelle Messung speichern"):
             "User-ID": user_id.strip(),
             "Analysemodus": analysis_mode,
             "Messkontext": measurement_context,
+            "Anzahl Trainings": int(number_of_trainings),
+            "Trainingseinheiten Detail": training_details_text,
             "Trainingsart": training_type,
             "Dauer Minuten": duration_min,
             "Session RPE": intensity_rpe,
             "Krafttraining Typ": strength_type,
             "Akuter Load": acute_load,
             "Chronischer Load": chronic_load,
-            "ACWR": round(acute_load / chronic_load, 2),
+            "ACWR": safe_round(acute_load / chronic_load, 2),
             "30 Tage Wochenstunden": weekly_training_hours,
             "30 Tage intensive Einheiten/Woche": intensive_sessions_per_week,
             "30 Tage Krafttrainings/Woche": strength_sessions_per_week,
             "30 Tage Krafttyp": chronic_strength_type,
             "Geschätzter Wochenload": chronic_estimate["weekly_load"],
+            "Training 1 Art": training_sessions[0]["type"] if len(training_sessions) >= 1 else None,
+            "Training 1 Dauer": training_sessions[0]["duration"] if len(training_sessions) >= 1 else None,
+            "Training 1 RPE": training_sessions[0]["rpe"] if len(training_sessions) >= 1 else None,
+            "Training 1 Krafttyp": training_sessions[0]["strength_type"] if len(training_sessions) >= 1 else None,
+            "Training 1 Load": training_sessions[0]["load"] if len(training_sessions) >= 1 else None,
+            "Training 2 Art": training_sessions[1]["type"] if len(training_sessions) >= 2 else None,
+            "Training 2 Dauer": training_sessions[1]["duration"] if len(training_sessions) >= 2 else None,
+            "Training 2 RPE": training_sessions[1]["rpe"] if len(training_sessions) >= 2 else None,
+            "Training 2 Krafttyp": training_sessions[1]["strength_type"] if len(training_sessions) >= 2 else None,
+            "Training 2 Load": training_sessions[1]["load"] if len(training_sessions) >= 2 else None,
+            "Training 3 Art": training_sessions[2]["type"] if len(training_sessions) >= 3 else None,
+            "Training 3 Dauer": training_sessions[2]["duration"] if len(training_sessions) >= 3 else None,
+            "Training 3 RPE": training_sessions[2]["rpe"] if len(training_sessions) >= 3 else None,
+            "Training 3 Krafttyp": training_sessions[2]["strength_type"] if len(training_sessions) >= 3 else None,
+            "Training 3 Load": training_sessions[2]["load"] if len(training_sessions) >= 3 else None,
+            "Training 4 Art": training_sessions[3]["type"] if len(training_sessions) >= 4 else None,
+            "Training 4 Dauer": training_sessions[3]["duration"] if len(training_sessions) >= 4 else None,
+            "Training 4 RPE": training_sessions[3]["rpe"] if len(training_sessions) >= 4 else None,
+            "Training 4 Krafttyp": training_sessions[3]["strength_type"] if len(training_sessions) >= 4 else None,
+            "Training 4 Load": training_sessions[3]["load"] if len(training_sessions) >= 4 else None,
             "RMSSD": None if use_short_version else rmssd,
-            "LnRMSSD": None if use_short_version else round(ln_rmssd(rmssd), 4),
+            "LnRMSSD": None if use_short_version else safe_round(ln_rmssd(rmssd), 4),
             "Baseline RMSSD": None if use_short_version else baseline_rmssd,
             "Ruhepuls": resting_hr,
             "Baseline Ruhepuls": baseline_resting_hr,
@@ -1715,20 +1804,20 @@ if st.sidebar.button("Aktuelle Messung speichern"):
             "Empfehlung": result["recommendation"],
             "HRV Trendstatus": hrv_trend["status"],
             "Kompensationsbelastung": result["subscores"].get("Kompensationsbelastung", 0),
-            "LnRMSSD Rolling": None if hrv_trend["ln_rmssd_rolling"] is None else round(hrv_trend["ln_rmssd_rolling"], 4),
-            "LnRMSSD Baseline": None if hrv_trend["ln_rmssd_baseline"] is None else round(hrv_trend["ln_rmssd_baseline"], 4),
-            "SWC": None if hrv_trend["swc"] is None else round(hrv_trend["swc"], 4),
-            "LnRMSSD CV 7": None if hrv_trend["lnrmssd_cv_7"] is None else round(hrv_trend["lnrmssd_cv_7"], 3),
-            "HRV CV Badness": round(hrv_trend["cv_badness"], 1),
-            "RR Intervall ms": round(hrv_trend["rr_interval_current"], 1),
-            "LnRMSSD RR Ratio": round(hrv_trend["lnrmssd_rr_ratio_current"], 6),
-            "HRV Saturation Score": round(hrv_trend["saturation_score"], 1),
-            "Freshness Score": round(hrv_trend["freshness_score"], 1),
-            "HRV Outlier Score": round(hrv_trend["hrv_outlier_score"], 1),
+            "LnRMSSD Rolling": safe_round(hrv_trend.get("ln_rmssd_rolling"), 4),
+            "LnRMSSD Baseline": safe_round(hrv_trend.get("ln_rmssd_baseline"), 4),
+            "SWC": safe_round(hrv_trend.get("swc"), 4),
+            "LnRMSSD CV 7": safe_round(hrv_trend.get("lnrmssd_cv_7"), 3),
+            "HRV CV Badness": safe_round(hrv_trend.get("cv_badness"), 1),
+            "RR Intervall ms": safe_round(hrv_trend.get("rr_interval_current"), 1),
+            "LnRMSSD RR Ratio": safe_round(hrv_trend.get("lnrmssd_rr_ratio_current"), 6),
+            "HRV Saturation Score": safe_round(hrv_trend.get("saturation_score"), 1),
+            "Freshness Score": safe_round(hrv_trend.get("freshness_score"), 1),
+            "HRV Outlier Score": safe_round(hrv_trend.get("hrv_outlier_score"), 1),
             "HRV Messwarnung": hrv_trend["measurement_warning"],
-            "Wochenmittel LnRMSSD aktuell": None if hrv_trend["weekly_mean_current"] is None else round(hrv_trend["weekly_mean_current"], 4),
-            "Wochenmittel LnRMSSD vorher": None if hrv_trend["weekly_mean_previous"] is None else round(hrv_trend["weekly_mean_previous"], 4),
-            "Wochenmittel Delta": None if hrv_trend["weekly_mean_delta"] is None else round(hrv_trend["weekly_mean_delta"], 4),
+            "Wochenmittel LnRMSSD aktuell": safe_round(hrv_trend.get("weekly_mean_current"), 4),
+            "Wochenmittel LnRMSSD vorher": safe_round(hrv_trend.get("weekly_mean_previous"), 4),
+            "Wochenmittel Delta": safe_round(hrv_trend.get("weekly_mean_delta"), 4),
         }
         for profile_name, score in result["profile_scores"].items():
             new_measurement[profile_name] = score
