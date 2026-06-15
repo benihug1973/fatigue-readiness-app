@@ -1369,8 +1369,8 @@ def build_7_day_report_pdf(df: pd.DataFrame, selected_user: str, mode: str = "Le
 # STREAMLIT UI
 # =============================
 
-st.set_page_config(page_title="Readiness-App V11", page_icon="🏃", layout="wide")
-st.title("🏃 Readiness-App V11")
+st.set_page_config(page_title="Readiness-App V12", page_icon="🏃", layout="wide")
+st.title("🏃 Readiness-App V12")
 st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Session-RPE-Load, Kurz-/Vollversion und Google-Sheet-Speicherung")
 
 if google_sheets_configured():
@@ -1412,13 +1412,13 @@ st.sidebar.divider()
 st.sidebar.subheader("📘 Nutzerleitfaden")
 
 try:
-    with open("Readyness_App_Nutzerleitfaden.pdf", "rb") as pdf_file:
+    with open("Readiness_App_Nutzerleitfaden.pdf", "rb") as pdf_file:
         PDFbyte = pdf_file.read()
 
     st.sidebar.download_button(
         label="📥 Nutzerleitfaden öffnen / herunterladen",
         data=PDFbyte,
-        file_name="Readyness_App_Nutzerleitfaden.pdf",
+        file_name="Readiness_App_Nutzerleitfaden.pdf",
         mime="application/pdf"
     )
 
