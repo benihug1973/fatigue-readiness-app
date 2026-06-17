@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import math
 import os
 import io
@@ -16,6 +17,17 @@ import io
 HISTORY_FILE = "fatigue_measurements_history.csv"
 GOOGLE_SHEET_NAME = "fatigue_measurements"
 GOOGLE_WORKSHEET_NAME = "measurements"
+APP_TIMEZONE = ZoneInfo("Europe/Zurich")
+
+
+def now_local() -> datetime:
+    """Aktuelle lokale Zeit für Schweiz/Liechtenstein inklusive Sommerzeit."""
+    return datetime.now(APP_TIMEZONE)
+
+
+def now_local_str() -> str:
+    """Zeitstempel für gespeicherte Messungen in Europe/Zurich."""
+    return now_local().strftime("%Y-%m-%d %H:%M")
 
 
 # =============================
@@ -270,7 +282,7 @@ def compute_hrv_trend(history_df: pd.DataFrame, current_rmssd: float, current_re
     - Wochenmittel der letzten zwei Wochen, sobald genügend Daten vorhanden sind
     """
     current_row = pd.DataFrame([{
-        "Zeitpunkt": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "Zeitpunkt": now_local_str(),
         "User-ID": user_id,
         "RMSSD": current_rmssd,
         "LnRMSSD": ln_rmssd(current_rmssd),
@@ -783,11 +795,6 @@ class FatigueProfilerV4:
         if hrr_bad >= 90 and bp_bad >= 70 and resp_bad >= 30:
             recovery = min(recovery, 35)
 
-        # Freshness/Saturation: bei tieferem LnRMSSD, aber sehr tiefem Ruhepuls und stabiler subjektiver Lage
-        # wird Recovery nicht automatisch abgestraft.
-        if self.hrv_freshness_score() >= 45 and fatigue_bad < 55 and illness_bad < 30:
-            recovery = max(recovery, 70)
-
         return {
             "Erholungsindex": self.clamp(recovery, 0, 95),
             "Zentrale Erschöpfung": self.clamp(central, 0, 100),
@@ -841,8 +848,6 @@ class FatigueProfilerV4:
             drivers.append("HRV-Stabilität auffällig: stärkere Tag-zu-Tag-Schwankung im LnRMSSD")
         if self.d.hrv_saturation_score >= 40:
             drivers.append("Mögliche HRV-Saturation: tiefer Ruhepuls verändert die HRV-Interpretation")
-        if self.d.hrv_freshness_score >= 45:
-            drivers.append("Mögliches Freshness-Muster: tiefer Puls und HRV-Kontext sprechen nicht zwingend für Ermüdung")
         if self.hrr_badness() >= 45:
             drivers.append("Heart Rate Recovery langsam oder auffällig")
         if self.compensation_badness() >= 50:
@@ -898,8 +903,7 @@ class FatigueProfilerV4:
             (100 - self.d.hrv_trend_badness) * 0.035 +
             (100 - self.d.hrv_cv_badness) * 0.035 +
             (100 - self.compensation_badness()) * 0.02 +
-            (100 - self.hrr_badness()) * 0.01 +
-            self.hrv_freshness_score() * 0.015
+            (100 - self.hrr_badness()) * 0.01
         )
 
         # V4 Safety Override: Krankheitssymptome werden härter begrenzt.
@@ -1158,7 +1162,6 @@ class FatigueProfilerV4:
                 "LnRMSSD Trendbelastung": round(self.d.hrv_trend_badness, 1),
                 "HRV Instabilität": round(self.d.hrv_cv_badness, 1),
                 "HRV Saturation": round(self.hrv_saturation_score(), 1),
-                "Freshness Score": round(self.hrv_freshness_score(), 1),
                 "HRV Ausreisser / Messwarnung": round(self.d.hrv_outlier_score, 1),
                 "Heart Rate Recovery Badness": round(self.hrr_badness(), 1),
                 "Kompensationsbelastung": round(self.compensation_badness(), 1),
@@ -1387,8 +1390,8 @@ def build_7_day_report_pdf(df: pd.DataFrame, selected_user: str, mode: str = "Le
 # STREAMLIT UI
 # =============================
 
-st.set_page_config(page_title="Readiness-App V13", page_icon="🏃", layout="wide")
-st.title("🏃 Readiness-App V13")
+st.set_page_config(page_title="Readiness-App V14", page_icon="🏃", layout="wide")
+st.title("🏃 Readiness-App V14")
 st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Vortagsbelastung, Session-RPE-Load, Kurz-/Vollversion und Google-Sheet-Speicherung")
 
 if google_sheets_configured():
@@ -1730,7 +1733,6 @@ data = UserInputV4(
     hrv_valid_measurements=hrv_trend["valid_measurements"],
     hrv_cv_badness=hrv_trend["cv_badness"],
     hrv_saturation_score=hrv_trend["saturation_score"],
-    hrv_freshness_score=hrv_trend["freshness_score"],
     hrv_outlier_score=hrv_trend["hrv_outlier_score"],
     hrv_measurement_warning=hrv_trend["measurement_warning"],
     hrr_1min=hrr_1min,
@@ -1750,7 +1752,7 @@ if st.sidebar.button("Aktuelle Messung speichern"):
         st.sidebar.error("Bitte zuerst eine User-ID eingeben.")
     else:
         new_measurement = {
-            "Zeitpunkt": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "Zeitpunkt": now_local_str(),
             "User-ID": user_id.strip(),
             "Analysemodus": analysis_mode,
             "Messkontext": measurement_context,
@@ -1842,7 +1844,6 @@ if st.sidebar.button("Aktuelle Messung speichern"):
             "RR Intervall ms": safe_round(hrv_trend.get("rr_interval_current"), 1),
             "LnRMSSD RR Ratio": safe_round(hrv_trend.get("lnrmssd_rr_ratio_current"), 6),
             "HRV Saturation Score": safe_round(hrv_trend.get("saturation_score"), 1),
-            "Freshness Score": safe_round(hrv_trend.get("freshness_score"), 1),
             "HRV Outlier Score": safe_round(hrv_trend.get("hrv_outlier_score"), 1),
             "HRV Messwarnung": hrv_trend["measurement_warning"],
             "Wochenmittel LnRMSSD aktuell": safe_round(hrv_trend.get("weekly_mean_current"), 4),
@@ -1892,11 +1893,10 @@ if not use_short_version:
     trend_col4.metric("Individuelle Schwelle (SWC)", "-" if hrv_trend["swc"] is None else round(hrv_trend["swc"], 3))
     st.caption(hrv_trend["explanation"])
 
-    trend_col5, trend_col6, trend_col7, trend_col8 = st.columns(4)
+    trend_col5, trend_col6, trend_col7 = st.columns(3)
     trend_col5.metric("LnRMSSD CV 7", "-" if hrv_trend["lnrmssd_cv_7"] is None else f"{round(hrv_trend['lnrmssd_cv_7'], 2)} %")
     trend_col6.metric("HRV Instabilität", round(hrv_trend["cv_badness"], 1))
     trend_col7.metric("HRV Saturation", round(hrv_trend["saturation_score"], 1))
-    trend_col8.metric("Freshness Score", round(hrv_trend["freshness_score"], 1))
 
     if hrv_trend["weekly_mean_current"] is not None:
         st.caption(
@@ -1951,7 +1951,7 @@ if use_short_version:
     for key in [
         "HRV Score", "Ungewöhnliche Atemfrequenz", "Kreislaufregulation",
         "LnRMSSD Trendbelastung", "HRV Instabilität", "HRV Saturation",
-        "Freshness Score", "HRV Ausreisser / Messwarnung",
+        "HRV Ausreisser / Messwarnung",
         "Heart Rate Recovery Badness", "Kompensationsbelastung"
     ]:
         subscores_to_show.pop(key, None)
@@ -1986,7 +1986,7 @@ else:
         mime="text/csv",
     )
 
-    chart_cols = ["Training Readiness", "Work Readiness", "RMSSD", "Ruhepuls", "Krankheitssymptome", "Kompensationsbelastung", "HRV CV Badness", "HRV Outlier Score", "HRV Saturation Score", "Freshness Score", "Schlafqualität", "Mentaler Stress"]
+    chart_cols = ["Training Readiness", "Work Readiness", "RMSSD", "Ruhepuls", "Krankheitssymptome", "Kompensationsbelastung", "HRV CV Badness", "HRV Outlier Score", "HRV Saturation Score", "Schlafqualität", "Mentaler Stress"]
     existing_chart_cols = [c for c in chart_cols if c in display_history_df.columns]
 
     if existing_chart_cols and len(display_history_df) >= 2:
