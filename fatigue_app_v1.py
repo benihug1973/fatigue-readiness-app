@@ -203,7 +203,7 @@ def rr_interval_ms(heart_rate_bpm: float) -> float:
 def safe_round(value, ndigits=1):
     """Rundet nur echte Zahlen. None/NaN/leere Werte bleiben None.
 
-    Wichtig fuer die Kurzversion: Dort werden HRV/HRR/BP-Felder bewusst
+    Wichtig für die Kurzversion: Dort werden HRV/HRR/BP-Felder bewusst
     nicht erhoben. Beim Speichern duerfen diese None-Werte nicht mit
     round(None, ...) verarbeitet werden.
     """
@@ -219,7 +219,6 @@ def safe_round(value, ndigits=1):
 
 def compute_hrr_badness(hrr_1min: Optional[float]) -> float:
     """Pragmatische Basisbewertung von HRR60.
-
     HRR60 = Peak-HF am Ende eines standardisierten Tests minus HF nach 60 Sekunden.
     Wichtig: Diese Funktion liefert nur einen Basiswert. Die App interpretiert HRR
     zusätzlich im Kontext von HRV, Ruhepuls, Blutdruck, Atemfrequenz, Training Load
@@ -540,7 +539,6 @@ class FatigueProfilerV4:
 
     def load_badness(self):
         """Progressive ACWR-Bewertung statt harter Deckelung ab 1.5.
-
         Ziel: Auch bei sehr hohen ACWR-Werten soll die App noch auf
         Veränderungen der Session-RPE-Intensität reagieren. Früher wurde
         bereits ab ACWR >= 1.5 immer 100 vergeben; dadurch blieben
@@ -584,7 +582,6 @@ class FatigueProfilerV4:
 
     def compensation_badness(self):
         """Erkennt mögliche parasympathische Kompensation.
-
         Hintergrund:
         Sehr hohe RMSSD + tiefer Ruhepuls sind oft gut. In Kombination mit
         hohem Load, Müdigkeit, Muskelschmerzen oder schlechtem Schlaf können sie
@@ -946,8 +943,7 @@ class FatigueProfilerV4:
 
     def recommendation(self, profile):
         """Konkrete, profil- und situationsabhängige Trainingsempfehlung.
-
-        Ziel: Nicht nur "kontrolliert trainieren", sondern eine konkrete
+        Ziel: konkrete
         Handlungsempfehlung: Pause, lockere Grundlagenausdauer, Technik,
         kurze Steigerungen oder intensive Einheit.
         """
@@ -1172,7 +1168,7 @@ class FatigueProfilerV4:
 # =============================
 
 def add_measurement_axis(df: pd.DataFrame) -> pd.DataFrame:
-    """Ergaenzt Messnummer und kurze Achsenlabels mit Datum/Uhrzeit."""
+    """Ergänzt Messnummer und kurze Achsenlabels mit Datum/Uhrzeit."""
     out = df.copy().reset_index(drop=True)
     out["Messnummer"] = range(1, len(out) + 1)
 
@@ -1192,7 +1188,7 @@ def add_measurement_axis(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def plot_measurement_history_by_number(df: pd.DataFrame, chart_cols: list[str]):
-    """Plot fuer Verlauf der Messungen mit Messnummer statt Zeitachse."""
+    """Plot für Verlauf der Messungen mit Messnummer statt Zeitachse."""
     plot_df = add_measurement_axis(df)
     numeric_cols = []
     for col in chart_cols:
@@ -1277,10 +1273,11 @@ def build_7_day_report_pdf(df: pd.DataFrame, selected_user: str, mode: str = "Le
     lines.append("")
     lines.append("Kernwerte")
     lines.append(f"- Training Readiness: Mittel {mean_text('Training Readiness')} | Minimum {min_text('Training Readiness')} | Maximum {max_text('Training Readiness')}")
+    lines.append("- Hinweis: Die Readiness beschreibt den aktuellen Morgen; die Trainingsbelastung bezieht sich auf den Vortag.")
     lines.append(f"- Work Readiness: Mittel {mean_text('Work Readiness')} | Minimum {min_text('Work Readiness')} | Maximum {max_text('Work Readiness')}")
-    lines.append(f"- Haeufigstes primaeres Profil: {primary_profile}")
+    lines.append(f"- Häufigstes primäres Profil: {primary_profile}")
     lines.append(f"- RMSSD: Mittel {mean_text('RMSSD')} | Ruhepuls: Mittel {mean_text('Ruhepuls')}")
-    lines.append(f"- Schlafqualitaet: Mittel {mean_text('Schlafqualität')} | Mentaler Stress: Mittel {mean_text('Mentaler Stress')}")
+    lines.append(f"- Schlafqualität: Mittel {mean_text('Schlafqualität')} | Mentaler Stress: Mittel {mean_text('Mentaler Stress')}")
     lines.append("")
     lines.append("Werte, die Beachtung verdienen")
 
@@ -1289,21 +1286,21 @@ def build_7_day_report_pdf(df: pd.DataFrame, selected_user: str, mode: str = "Le
         if condition:
             alerts.append(text)
 
-    add_alert((num_col("Training Readiness") < 50).any(), "Training Readiness war mindestens einmal unter 50: Belastung oder Erholung genauer pruefen.")
+    add_alert((num_col("Training Readiness") < 50).any(), "Training Readiness war mindestens einmal unter 50: Belastung oder Erholung genauer prüfen.")
     add_alert((num_col("Work Readiness") < 50).any(), "Work Readiness war mindestens einmal unter 50: mentale/allgemeine Belastbarkeit beachten.")
-    add_alert((num_col("Erholungsindex") < 50).any(), "Erholungsindex war tief: Erholung, Schlaf und Load-Verlauf pruefen.")
-    add_alert((num_col("Zentrale Erschöpfung") >= 70).any(), "Zentrale Erschoepfung war hoch: Nervensystem/Stress/Schlaf priorisieren.")
-    add_alert((num_col("Muskuläre Ermüdung") >= 70).any(), "Muskulaere Ermuedung war hoch: keine harten muskulären Einheiten in dieser Phase.")
-    add_alert((num_col("Kreislaufregulation") >= 70).any(), "Kreislaufregulation war auffaellig: HRR, Blutdruck, Ruhepuls oder Atmung kontrollieren.")
+    add_alert((num_col("Erholungsindex") < 50).any(), "Erholungsindex war tief: Erholung, Schlaf und Load-Verlauf prüfen.")
+    add_alert((num_col("Zentrale Erschöpfung") >= 70).any(), "Zentrale Erschöpfung war hoch: Nervensystem/Stress/Schlaf priorisieren.")
+    add_alert((num_col("Muskuläre Ermüdung") >= 70).any(), "Muskuläre Ermüdung war hoch: keine harten muskulären Einheiten in dieser Phase.")
+    add_alert((num_col("Kreislaufregulation") >= 70).any(), "Kreislaufregulation war auffällig: HRR, Blutdruck, Ruhepuls oder Atmung kontrollieren.")
     add_alert((num_col("Krankheitssymptome") > 6).any(), "Krankheitssymptome >6: Training pausieren bis Symptome deutlich sinken.")
-    add_alert(((num_col("Krankheitssymptome") >= 3) & (num_col("Krankheitssymptome") <= 6)).any(), "Krankheitssymptome 3-6: nur lockere Belastung, keine Intensitaet.")
-    add_alert((num_col("Kompensationsbelastung") >= 50).any(), "Kompensationsbelastung auffaellig: hohe HRV nicht automatisch als gute Erholung interpretieren.")
-    add_alert((num_col("HRV CV Badness") >= 45).any(), "HRV-Stabilitaet auffaellig: staerkere Tag-zu-Tag-Schwankungen beobachten.")
-    add_alert((num_col("HRV Outlier Score") >= 55).any(), "HRV-Ausreisser vorhanden: moeglicher Messfehler oder aussergewoehnliche Belastung; Messung standardisiert wiederholen.")
-    add_alert((num_col("HRR Badness") >= 45).any(), "Heart Rate Recovery auffaellig: HRR-Test standardisiert wiederholen und Kreislaufwerte beachten.")
-    add_alert((num_col("ACWR") >= 1.5).any(), "ACWR deutlich erhoeht: akute Belastung ueber dem gewohnten Niveau.")
-    add_alert((num_col("Schlafqualität") <= 4).any(), "Schlafqualitaet war tief: Erholungssteuerung besonders beachten.")
-    add_alert((num_col("Mentaler Stress") >= 7).any(), "Mentaler Stress war hoch: Intensitaet reduzieren, Regeneration und Alltagstress beachten.")
+    add_alert(((num_col("Krankheitssymptome") >= 3) & (num_col("Krankheitssymptome") <= 6)).any(), "Krankheitssymptome 3-6: nur lockere Belastung, keine Intensität.")
+    add_alert((num_col("Kompensationsbelastung") >= 50).any(), "Kompensationsbelastung auffällig: hohe HRV nicht automatisch als gute Erholung interpretieren.")
+    add_alert((num_col("HRV CV Badness") >= 45).any(), "HRV-Stabilität auffällig: stärkere Tag-zu-Tag-Schwankungen beobachten.")
+    add_alert((num_col("HRV Outlier Score") >= 55).any(), "HRV-Ausreisser vorhanden: möglicher Messfehler oder aussergewöhnliche Belastung; Messung standardisiert wiederholen.")
+    add_alert((num_col("HRR Badness") >= 45).any(), "Heart Rate Recovery auffällig: HRR-Test standardisiert wiederholen und Kreislaufwerte beachten.")
+    add_alert((num_col("ACWR") >= 1.5).any(), "ACWR deutlich erhöht: Belastung des Vortags über dem gewohnten Niveau.")
+    add_alert((num_col("Schlafqualität") <= 4).any(), "Schlafqualität war tief: Erholungssteuerung besonders beachten.")
+    add_alert((num_col("Mentaler Stress") >= 7).any(), "Mentaler Stress war hoch: Intensität reduzieren, Regeneration und Alltagstress beachten.")
 
     if not alerts:
         alerts.append("Keine klaren Warnwerte im 7-Tage-Zeitraum erkannt.")
@@ -1312,15 +1309,15 @@ def build_7_day_report_pdf(df: pd.DataFrame, selected_user: str, mode: str = "Le
         lines.append(f"- {alert}")
 
     lines.append("")
-    lines.append("Empfehlung fuer die naechste Woche")
+    lines.append("Empfehlung für die nächste Woche")
     if (num_col("Krankheitssymptome") > 6).any():
         lines.append("- Fokus auf Erholung. Kein Training bis Krankheitssymptome deutlich gesunken sind.")
     elif (num_col("Training Readiness") < 50).any() or (num_col("Erholungsindex") < 50).any():
-        lines.append("- Trainingsumfang und Intensitaet vorsichtig planen. Geeignet: Grundlagenausdauer, Technik, Mobility. Keine langen erschöpfenden Einheiten.")
+        lines.append("- Trainingsumfang und Intensität vorsichtig planen. Geeignet: Grundlagenausdauer, Technik, Mobility. Keine langen erschöpfenden Einheiten.")
     elif (num_col("Muskuläre Ermüdung") >= 70).any():
         lines.append("- Muskuläre Belastung reduzieren. Alternative Muskelgruppen, Technik oder lockere Grundlagenausdauer bevorzugen.")
     else:
-        lines.append("- Weiter regelmaessig messen. Bei stabilen Werten kann das Training gemaess Plan fortgesetzt werden.")
+        lines.append("- Weiter regelmässig messen. Bei stabilen Werten kann das Training gemäss Plan fortgesetzt werden.")
 
     lines.append("")
     lines.append("Hinweis: Der Rapport ist ein Monitoring-Werkzeug und ersetzt keine medizinische Diagnostik.")
@@ -1338,7 +1335,7 @@ def build_7_day_report_pdf(df: pd.DataFrame, selected_user: str, mode: str = "Le
                 ax.text(0.0, y, line, fontsize=16, fontweight="bold", va="top")
                 y -= 0.045
                 continue
-            if line in ["Kernwerte", "Werte, die Beachtung verdienen", "Empfehlung fuer die naechste Woche"]:
+            if line in ["Kernwerte", "Werte, die Beachtung verdienen", "Empfehlung für die nächste Woche"]:
                 y -= 0.012
                 ax.text(0.0, y, line, fontsize=12, fontweight="bold", va="top")
                 y -= 0.032
@@ -1358,7 +1355,7 @@ def build_7_day_report_pdf(df: pd.DataFrame, selected_user: str, mode: str = "Le
         pdf.savefig(fig, bbox_inches="tight")
         plt.close(fig)
 
-        # Zweite Seite: kompakte Trendgrafik, falls moeglich.
+        # Zweite Seite: kompakte Trendgrafik, falls möglich.
         trend_cols = [c for c in ["Training Readiness", "Work Readiness", "Erholungsindex", "Krankheitssymptome", "Schlafqualität", "Mentaler Stress"] if c in week_df.columns]
         if len(week_df) >= 2 and trend_cols:
             plot_df = add_measurement_axis(week_df)
@@ -1386,9 +1383,9 @@ def build_7_day_report_pdf(df: pd.DataFrame, selected_user: str, mode: str = "Le
 # STREAMLIT UI
 # =============================
 
-st.set_page_config(page_title="Readiness-App V12", page_icon="🏃", layout="wide")
-st.title("🏃 Readiness-App V12")
-st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Session-RPE-Load, Kurz-/Vollversion und Google-Sheet-Speicherung")
+st.set_page_config(page_title="Readiness-App V13", page_icon="🏃", layout="wide")
+st.title("🏃 Readiness-App V13")
+st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Vortagsbelastung, Session-RPE-Load, Kurz-/Vollversion und Google-Sheet-Speicherung")
 
 if google_sheets_configured():
     st.info("Datenspeicherung: Google Sheet ist konfiguriert.")
@@ -1444,35 +1441,41 @@ except FileNotFoundError:
         "Nutzerleitfaden nicht gefunden. "
         "Bitte prüfen ob die PDF-Datei in GitHub hochgeladen wurde."
     )
-with st.sidebar.expander("Trainingsbelastung - Session RPE", expanded=True):
+with st.sidebar.expander("Belastung des Vortags - Session RPE", expanded=True):
+    st.info(
+        "Bitte die Trainingseinheiten des Vortags erfassen. "
+        "Die heutige Readiness wird anhand deiner aktuellen Morgenwerte "
+        "(z.B. Ruhepuls, HRV, Schlafqualität, Müdigkeit und Stimmung) "
+        "im Zusammenhang mit der Belastung des Vortags beurteilt."
+    )
     st.caption(
-        "Akuter Tages-Load = Summe aller heutigen Einheiten. "
+        "Belastung des Vortags = Summe aller Trainingseinheiten des Vortags. "
         "Pro Einheit: Dauer in Minuten × Intensität 1-10 × Trainingsart-Faktor."
     )
 
     number_of_trainings = st.number_input(
-        "Anzahl Trainingseinheiten heute",
+        "Anzahl Trainingseinheiten am Vortag",
         min_value=1,
         max_value=4,
         value=1,
         step=1,
-        help="Bis zu vier Einheiten pro Tag können erfasst und kumuliert werden.",
+        help="Bis zu vier Trainingseinheiten des Vortags können erfasst und kumuliert werden.",
     )
 
     training_sessions = []
     acute_load = 0.0
 
     for session_idx in range(1, int(number_of_trainings) + 1):
-        st.markdown(f"**Training {session_idx}**")
+        st.markdown(f"**Trainingseinheit {session_idx} (Vortag)**")
 
         training_type_i = st.selectbox(
-            f"Trainingsart {session_idx}",
+            f"Trainingsart {session_idx} (Vortag)",
             ["Ausdauer", "Kraft", "HIIT", "Wettkampf", "Recovery Training"],
             key=f"training_type_{session_idx}",
         )
 
         duration_min_i = st.number_input(
-            f"Dauer Training {session_idx} (Minuten)",
+            f"Dauer Trainingseinheit {session_idx} am Vortag (Minuten)",
             min_value=0,
             value=60 if session_idx == 1 else 0,
             step=5,
@@ -1480,7 +1483,7 @@ with st.sidebar.expander("Trainingsbelastung - Session RPE", expanded=True):
         )
 
         intensity_rpe_i = st.slider(
-            f"Intensität / Session RPE Training {session_idx}",
+            f"Intensität / Session RPE Training {session_idx} (Vortag)",
             min_value=1,
             max_value=10,
             value=5,
@@ -1490,7 +1493,7 @@ with st.sidebar.expander("Trainingsbelastung - Session RPE", expanded=True):
 
         if training_type_i == "Kraft":
             strength_type_i = st.selectbox(
-                f"Krafttraining-Typ {session_idx}",
+                f"Krafttraining-Typ {session_idx} (Vortag)",
                 ["Hypertrophie", "Maximalkraft", "Kraftausdauer"],
                 key=f"strength_type_{session_idx}",
             )
@@ -1513,7 +1516,7 @@ with st.sidebar.expander("Trainingsbelastung - Session RPE", expanded=True):
             "load": float(session_load_i),
         })
         acute_load += float(session_load_i)
-        st.caption(f"Load Training {session_idx}: {session_load_i}")
+        st.caption(f"Load Training {session_idx} (Vortag): {session_load_i}")
 
     acute_load = round(acute_load, 1)
 
@@ -1531,7 +1534,7 @@ with st.sidebar.expander("Trainingsbelastung - Session RPE", expanded=True):
         ]
     )
 
-    st.metric("Akuter Tages-Load gesamt", acute_load)
+    st.metric("Belastung des Vortags gesamt", acute_load)
     st.caption("Einzeln: " + training_details_text)
 
 with st.sidebar.expander("Chronische Trainingload über die letzten 30 Tage", expanded=True):
@@ -1747,12 +1750,15 @@ if st.sidebar.button("Aktuelle Messung speichern"):
             "User-ID": user_id.strip(),
             "Analysemodus": analysis_mode,
             "Messkontext": measurement_context,
+            "Anzahl Trainings Vortag": int(number_of_trainings),
             "Anzahl Trainings": int(number_of_trainings),
+            "Trainingseinheiten Vortag Detail": training_details_text,
             "Trainingseinheiten Detail": training_details_text,
             "Trainingsart": training_type,
             "Dauer Minuten": duration_min,
             "Session RPE": intensity_rpe,
             "Krafttraining Typ": strength_type,
+            "Belastung Vortag Load": acute_load,
             "Akuter Load": acute_load,
             "Chronischer Load": chronic_load,
             "ACWR": safe_round(acute_load / chronic_load, 2),
@@ -1761,25 +1767,45 @@ if st.sidebar.button("Aktuelle Messung speichern"):
             "30 Tage Krafttrainings/Woche": strength_sessions_per_week,
             "30 Tage Krafttyp": chronic_strength_type,
             "Geschätzter Wochenload": chronic_estimate["weekly_load"],
+            "Training 1 Vortag Art": training_sessions[0]["type"] if len(training_sessions) >= 1 else None,
             "Training 1 Art": training_sessions[0]["type"] if len(training_sessions) >= 1 else None,
+            "Training 1 Vortag Dauer": training_sessions[0]["duration"] if len(training_sessions) >= 1 else None,
             "Training 1 Dauer": training_sessions[0]["duration"] if len(training_sessions) >= 1 else None,
+            "Training 1 Vortag RPE": training_sessions[0]["rpe"] if len(training_sessions) >= 1 else None,
             "Training 1 RPE": training_sessions[0]["rpe"] if len(training_sessions) >= 1 else None,
+            "Training 1 Vortag Krafttyp": training_sessions[0]["strength_type"] if len(training_sessions) >= 1 else None,
             "Training 1 Krafttyp": training_sessions[0]["strength_type"] if len(training_sessions) >= 1 else None,
+            "Training 1 Vortag Load": training_sessions[0]["load"] if len(training_sessions) >= 1 else None,
             "Training 1 Load": training_sessions[0]["load"] if len(training_sessions) >= 1 else None,
+            "Training 2 Vortag Art": training_sessions[1]["type"] if len(training_sessions) >= 2 else None,
             "Training 2 Art": training_sessions[1]["type"] if len(training_sessions) >= 2 else None,
+            "Training 2 Vortag Dauer": training_sessions[1]["duration"] if len(training_sessions) >= 2 else None,
             "Training 2 Dauer": training_sessions[1]["duration"] if len(training_sessions) >= 2 else None,
+            "Training 2 Vortag RPE": training_sessions[1]["rpe"] if len(training_sessions) >= 2 else None,
             "Training 2 RPE": training_sessions[1]["rpe"] if len(training_sessions) >= 2 else None,
+            "Training 2 Vortag Krafttyp": training_sessions[1]["strength_type"] if len(training_sessions) >= 2 else None,
             "Training 2 Krafttyp": training_sessions[1]["strength_type"] if len(training_sessions) >= 2 else None,
+            "Training 2 Vortag Load": training_sessions[1]["load"] if len(training_sessions) >= 2 else None,
             "Training 2 Load": training_sessions[1]["load"] if len(training_sessions) >= 2 else None,
+            "Training 3 Vortag Art": training_sessions[2]["type"] if len(training_sessions) >= 3 else None,
             "Training 3 Art": training_sessions[2]["type"] if len(training_sessions) >= 3 else None,
+            "Training 3 Vortag Dauer": training_sessions[2]["duration"] if len(training_sessions) >= 3 else None,
             "Training 3 Dauer": training_sessions[2]["duration"] if len(training_sessions) >= 3 else None,
+            "Training 3 Vortag RPE": training_sessions[2]["rpe"] if len(training_sessions) >= 3 else None,
             "Training 3 RPE": training_sessions[2]["rpe"] if len(training_sessions) >= 3 else None,
+            "Training 3 Vortag Krafttyp": training_sessions[2]["strength_type"] if len(training_sessions) >= 3 else None,
             "Training 3 Krafttyp": training_sessions[2]["strength_type"] if len(training_sessions) >= 3 else None,
+            "Training 3 Vortag Load": training_sessions[2]["load"] if len(training_sessions) >= 3 else None,
             "Training 3 Load": training_sessions[2]["load"] if len(training_sessions) >= 3 else None,
+            "Training 4 Vortag Art": training_sessions[3]["type"] if len(training_sessions) >= 4 else None,
             "Training 4 Art": training_sessions[3]["type"] if len(training_sessions) >= 4 else None,
+            "Training 4 Vortag Dauer": training_sessions[3]["duration"] if len(training_sessions) >= 4 else None,
             "Training 4 Dauer": training_sessions[3]["duration"] if len(training_sessions) >= 4 else None,
+            "Training 4 Vortag RPE": training_sessions[3]["rpe"] if len(training_sessions) >= 4 else None,
             "Training 4 RPE": training_sessions[3]["rpe"] if len(training_sessions) >= 4 else None,
+            "Training 4 Vortag Krafttyp": training_sessions[3]["strength_type"] if len(training_sessions) >= 4 else None,
             "Training 4 Krafttyp": training_sessions[3]["strength_type"] if len(training_sessions) >= 4 else None,
+            "Training 4 Vortag Load": training_sessions[3]["load"] if len(training_sessions) >= 4 else None,
             "Training 4 Load": training_sessions[3]["load"] if len(training_sessions) >= 4 else None,
             "RMSSD": None if use_short_version else rmssd,
             "LnRMSSD": None if use_short_version else safe_round(ln_rmssd(rmssd), 4),
