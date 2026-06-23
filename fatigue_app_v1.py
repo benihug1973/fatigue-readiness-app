@@ -595,41 +595,99 @@ class FatigueProfilerV4:
         return self.clamp(sys_delta * 3 + dia_delta * 4, 0, 100)
 
     def compensation_badness(self):
-        """Erkennt mögliche parasympathische Kompensation.
+        """Erkennt mögliche parasympathische Kompensationsbelastung.
 
-        Hintergrund:
-        Sehr hohe RMSSD + tiefer Ruhepuls sind oft gut. In Kombination mit
-        hohem Load, Müdigkeit, Muskelschmerzen oder schlechtem Schlaf können sie
-        aber auch eine kompensatorische parasympathische Dominanz anzeigen.
+        Schmitt-orientierte Logik:
+        Hohe HRV und tiefer Ruhepuls sind häufig ein gutes Zeichen. Sie werden
+        nur dann als mögliche Kompensation gewertet, wenn gleichzeitig
+        Belastungszeichen vorliegen: erhöhter Load, Müdigkeit, Muskelschmerzen,
+        schlechter Schlaf, mentaler Stress oder tiefe Stimmung.
+
+        Wichtig: Es wird kein zusätzlicher Erholungs-/Superkompensationsindex
+        eingeführt. Bei hoher HRV + tiefem Ruhepuls + gutem Befinden bleibt
+        Kompensationsbelastung bewusst tief.
         """
         hrv_ratio = self.hrv_ratio()
         hr_delta = self.hr_delta()
+        acwr_value = self.acwr()
         load_bad = self.load_badness()
         fatigue_bad = self.bad_from_1_to_10(self.d.general_fatigue)
         soreness_bad = self.bad_from_1_to_10(self.d.muscle_soreness)
+        stress_bad = self.bad_from_1_to_10(self.d.mental_stress)
         sleep_bad = 100 - self.good_from_1_to_10(self.d.sleep_quality)
         mood_bad = 100 - self.good_from_1_to_10(self.d.mood)
 
-        strong_high_hrv = hrv_ratio >= 1.30
-        clearly_low_hr = hr_delta <= -4
-        relevant_context = (
-            self.acwr() >= 1.30 or
-            self.d.general_fatigue >= 7 or
-            self.d.muscle_soreness >= 7 or
-            self.d.sleep_quality <= 4
-        )
-
-        if not (strong_high_hrv and clearly_low_hr and relevant_context):
+        # Grundmuster: vagal/parasympathisch wirkende Lage. Schwellen bewusst
+        # etwas tiefer als bisher, damit auch moderat hohe HRV bei tiefem Puls
+        # im Kontext von Belastungszeichen erkannt wird.
+        hrv_elevated = hrv_ratio >= 1.15
+        hr_low = hr_delta <= -3
+        if not (hrv_elevated and hr_low):
             return 0
 
-        raw = (
-            25 +
-            load_bad * 0.30 +
-            fatigue_bad * 0.25 +
-            soreness_bad * 0.20 +
-            sleep_bad * 0.15 +
-            mood_bad * 0.10
+        # Bei sehr gutem subjektivem Befinden und moderatem Load wird das Muster
+        # eher als gute Erholung interpretiert und nicht als Kompensation.
+        low_risk_recovery_pattern = (
+            acwr_value < 1.15 and
+            self.d.general_fatigue <= 4 and
+            self.d.muscle_soreness <= 4 and
+            self.d.mental_stress <= 4 and
+            self.d.sleep_quality >= 7 and
+            self.d.mood >= 7 and
+            self.d.illness <= 2
         )
+        if low_risk_recovery_pattern:
+            return 0
+
+        # Kontextpunkte nach Schmitt-Logik: hohe HRV/tiefer Puls wird erst dann
+        # problematisch, wenn Belastungszeichen dazukommen.
+        context_points = 0
+        if acwr_value >= 1.15:
+            context_points += 1
+        if acwr_value >= 1.30:
+            context_points += 1
+        if self.d.general_fatigue >= 5:
+            context_points += 1
+        if self.d.general_fatigue >= 7:
+            context_points += 1
+        if self.d.muscle_soreness >= 5:
+            context_points += 1
+        if self.d.sleep_quality <= 6:
+            context_points += 1
+        if self.d.sleep_quality <= 4:
+            context_points += 1
+        if self.d.mental_stress >= 6:
+            context_points += 1
+        if self.d.mood <= 5:
+            context_points += 1
+
+        if context_points == 0:
+            return 0
+
+        hrv_excess = self.clamp((hrv_ratio - 1.15) / 0.35, 0, 1) * 25
+        low_hr_bonus = self.clamp((-hr_delta - 3) / 7, 0, 1) * 20
+        context_bonus = min(context_points * 6, 30)
+
+        raw = (
+            10 +
+            hrv_excess +
+            low_hr_bonus +
+            context_bonus +
+            load_bad * 0.20 +
+            fatigue_bad * 0.18 +
+            soreness_bad * 0.16 +
+            sleep_bad * 0.14 +
+            stress_bad * 0.10 +
+            mood_bad * 0.07
+        )
+
+        # Sehr klare Schmitt-Konstellation stärker gewichten: hohe HRV, tiefer
+        # Ruhepuls und zugleich deutliche Müdigkeit/Load/Schlafprobleme.
+        if hrv_ratio >= 1.25 and hr_delta <= -5 and context_points >= 3:
+            raw = max(raw, 55)
+        if hrv_ratio >= 1.30 and hr_delta <= -6 and context_points >= 4:
+            raw = max(raw, 70)
+
         return self.clamp(raw, 0, 95)
 
     def hrv_score(self):
@@ -776,8 +834,12 @@ class FatigueProfilerV4:
         elif 3 <= self.d.illness <= 6:
             recovery = min(recovery, 65)
 
-        if compensation >= 50:
+        if compensation >= 70:
+            recovery = min(recovery, 45)
+        elif compensation >= 50:
             recovery = min(recovery, 55)
+        elif compensation >= 35:
+            recovery = min(recovery, 65)
 
         if stress_bad >= 85 and sleep_bad >= 70 and fatigue_bad >= 70:
             recovery = min(recovery, 60)
@@ -850,7 +912,7 @@ class FatigueProfilerV4:
             drivers.append("Mögliche HRV-Saturation: tiefer Ruhepuls verändert die HRV-Interpretation")
         if self.hrr_badness() >= 45:
             drivers.append("Heart Rate Recovery langsam oder auffällig")
-        if self.compensation_badness() >= 50:
+        if self.compensation_badness() >= 35:
             drivers.append("Mögliche parasympathische Kompensation: hohe RMSSD, tiefer Ruhepuls und Belastungszeichen")
         if self.hr_badness() > 40:
             drivers.append("Ruhepuls deutlich über Baseline")
@@ -915,8 +977,12 @@ class FatigueProfilerV4:
         if self.d.hrv_trend_status == "unter Baseline":
             score = min(score, 65)
 
-        if self.compensation_badness() >= 50:
+        if self.compensation_badness() >= 70:
+            score = min(score, 50)
+        elif self.compensation_badness() >= 50:
             score = min(score, 60)
+        elif self.compensation_badness() >= 35:
+            score = min(score, 70)
 
         if self.d.hrv_cv_badness >= 60:
             # HRV-Instabilität bleibt ein Warnsignal, soll aber andere
@@ -1056,9 +1122,9 @@ class FatigueProfilerV4:
                 "Heute geeignet: lockere Grundlagenausdauer, Techniktraining, Bewegungsqualität oder Mobility. "
                 "Wenn du dich sehr gut fühlst, sind kurze Steigerungen möglich; keine erschöpfende Einheit."
             )
-        if self.compensation_badness() >= 50:
+        if self.compensation_badness() >= 45:
             return (
-                "Mögliche Kompensationsbelastung: hohe RMSSD und tiefer Ruhepuls wirken gut, passen aber nicht zu Load/Müdigkeit/Schlaf. "
+                "Mögliche Kompensationsbelastung: hohe RMSSD und tiefer Ruhepuls wirken gut, passen aber nicht zu Load/Müdigkeit/Schlaf/Stress. "
                 "Heute keine Hero-Session. Besser: lockere bis moderate Grundlagenausdauer, Technik oder kurze Aktivierung. "
                 "Intensität nur erhöhen, wenn dies bewusst Teil eines geplanten Belastungsblocks ist."
             )
@@ -1390,9 +1456,9 @@ def build_7_day_report_pdf(df: pd.DataFrame, selected_user: str, mode: str = "Le
 # STREAMLIT UI
 # =============================
 
-st.set_page_config(page_title="Readiness-App V14", page_icon="🏃", layout="wide")
-st.title("🏃 Readiness-App V14")
-st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Vortagsbelastung, Session-RPE-Load, Kurz-/Vollversion und Google-Sheet-Speicherung")
+st.set_page_config(page_title="Readiness-App V15", page_icon="🏃", layout="wide")
+st.title("🏃 Readiness-App V15")
+st.caption("Training Readiness, Work Readiness, Fatigue-Profile, HRV-Trends, Vortagsbelastung, Session-RPE-Load, stärkere Kompensationslogik, Kurz-/Vollversion und Google-Sheet-Speicherung")
 
 if google_sheets_configured():
     st.info("Datenspeicherung: Google Sheet ist konfiguriert.")
